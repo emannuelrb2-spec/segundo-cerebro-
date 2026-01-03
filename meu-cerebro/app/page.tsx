@@ -13,7 +13,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
 export default function Home() {
-  // CORREÇÃO 1: Inicializando com null para parar o erro de Build
   const graphRef = useRef<any>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
 
@@ -21,6 +20,8 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [isLinkingMode, setIsLinkingMode] = useState(false);
   const [noteContent, setNoteContent] = useState("");
+  
+  // Estado da Janela Flutuante
   const [winState, setWinState] = useState({ x: 50, y: 50, w: 450, h: 600 });
   const [dragMode, setDragMode] = useState<null | 'move' | 'resize'>(null);
   const dragStart = useRef({ mouseX: 0, mouseY: 0, winX: 0, winY: 0, winW: 0, winH: 0 });
@@ -28,7 +29,7 @@ export default function Home() {
   useEffect(() => {
     fetchGraphData();
 
-    // Atualização em tempo real (Magia do Supabase)
+    // Atualização em tempo real
     const channel = supabase
       .channel("realtime-graph")
       .on("postgres_changes", { event: "*", schema: "public", table: "nodes" }, fetchGraphData)
@@ -38,8 +39,21 @@ export default function Home() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // --- AQUI ESTÁ A CORREÇÃO DA FÍSICA (BOLINHAS GRUDADAS) ---
+  // Isso força as bolinhas a se empurrarem (-400) e mantém a linha longa (100)
+  useEffect(() => {
+    if (graphRef.current) {
+        // Dá um tempinho para o gráfico carregar e aplica a força
+        setTimeout(() => {
+            if(graphRef.current) {
+                graphRef.current.d3Force('charge').strength(-400); 
+                graphRef.current.d3Force('link').distance(100);
+            }
+        }, 500);
+    }
+  }, [data]); // Roda toda vez que os dados mudam
+
   async function fetchGraphData() {
-    // CORREÇÃO 2: Trazendo TODOS os dados (*) incluindo content e image_url
     const { data: nodesData } = await supabase.from('nodes').select('*');
     const { data: linksData } = await supabase.from('links').select('*');
 
@@ -47,8 +61,7 @@ export default function Home() {
       setData({
         nodes: nodesData.map(n => ({ 
             ...n, 
-            val: Number(n.val) || 20, // Garante tamanho padrão se vier vazio
-            // Se não tiver cor, usa cinza ou azul dependendo se é categoria
+            val: Number(n.val) || 20, 
             color: n.color || (n.group === 'category' ? '#ef4444' : '#6b7280') 
         })), 
         links: linksData.map(l => ({ source: l.source, target: l.target }))
@@ -71,7 +84,6 @@ export default function Home() {
     };
 
     const { error } = await supabase.from('nodes').insert([newNode]);
-    
     if (error) { alert("Erro ao salvar: " + error.message); return; }
 
     if (selectedNode) {
@@ -82,17 +94,20 @@ export default function Home() {
   const handleSave = async () => {
     if (!selectedNode) return;
     
-    selectedNode.notes = noteContent; // Atualiza local
+    // Atualiza visualmente na hora
+    selectedNode.notes = noteContent;
+    selectedNode.content = noteContent;
     setData({...data}); 
 
-    // Salva no banco (tanto no campo novo 'content' quanto no antigo 'notes')
+    // Salva no banco
     const { error } = await supabase
         .from('nodes')
         .update({ 
-            label: selectedNode.label || selectedNode.name, // Garante compatibilidade
+            label: selectedNode.label || selectedNode.name, 
             notes: noteContent,
-            content: noteContent, // Salva para o futuro
-            color: selectedNode.color
+            content: noteContent, 
+            color: selectedNode.color,
+            images: selectedNode.images // Salva array de imagens antigas
         })
         .eq('id', selectedNode.id);
 
@@ -120,6 +135,26 @@ export default function Home() {
     }
   }
 
+  // --- FUNÇÃO QUE FALTAVA (UPLOAD DE IMAGEM) ---
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && selectedNode) {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const imgUrl = event.target?.result as string;
+            // Adiciona a imagem na lista existente ou cria uma nova lista
+            const newImages = [...(selectedNode.images || []), imgUrl];
+            
+            selectedNode.images = newImages; // Atualiza visual
+            setData({...data}); // Força re-render
+            
+            // Salva no Supabase
+            await supabase.from('nodes').update({ images: newImages }).eq('id', selectedNode.id);
+        };
+        reader.readAsDataURL(file);
+    }
+  };
+
   // --- ARRASTAR JANELA ---
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -142,7 +177,6 @@ export default function Home() {
   const startResize = (e: React.MouseEvent) => { e.stopPropagation(); setDragMode('resize'); dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, winX: winState.x, winY: winState.y, winW: winState.w, winH: winState.h }; };
   const triggerColorPicker = () => { colorInputRef.current?.click(); };
 
-  // CORREÇÃO 3: Lógica de clique unificada
   const handleNodeClick = useCallback(async (node: any) => {
     if (isLinkingMode && selectedNode) {
       if (node.id === selectedNode.id) return; 
@@ -152,7 +186,6 @@ export default function Home() {
       graphRef.current?.centerAt(node.x, node.y, 1000);
       graphRef.current?.zoom(3, 2000);
       setSelectedNode(node);
-      // Prioriza o content novo, se não tiver, usa o notes antigo
       setNoteContent(node.content || node.notes || ""); 
     }
   }, [selectedNode, isLinkingMode]);
@@ -178,7 +211,6 @@ export default function Home() {
       
       {selectedNode && (
         <div style={{ left: winState.x, top: winState.y, width: winState.w, height: winState.h }} className="absolute bg-white/95 backdrop-blur-md shadow-2xl rounded-xl border border-gray-300 flex flex-col z-50 overflow-hidden">
-          {/* HEADER DA JANELA */}
           <div onMouseDown={startMove} className="h-12 bg-gray-100 border-b border-gray-200 flex justify-between items-center px-4 cursor-move select-none active:bg-gray-200 transition">
              <div className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2"><MousePointer2 size={14} /> {selectedNode.label || selectedNode.name}</div>
             <button onClick={() => { setSelectedNode(null); setIsLinkingMode(false); }} className="p-1 hover:bg-red-100 hover:text-red-500 rounded transition"><X size={20} /></button>
@@ -189,7 +221,7 @@ export default function Home() {
             
             <textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} className="w-full h-32 bg-transparent outline-none text-gray-700 resize-none leading-relaxed placeholder-gray-400 mb-6" placeholder="Escreva suas anotações aqui..."/>
             
-            {/* EXIBE FOTO DO WHATSAPP SE TIVER */}
+            {/* ANEXO DO WHATSAPP (SE TIVER) */}
             {selectedNode.image_url && (
                 <div className="mb-4">
                     <p className="text-xs text-gray-500 mb-1 font-bold">ANEXO DO WHATSAPP:</p>
@@ -199,7 +231,7 @@ export default function Home() {
                 </div>
             )}
 
-            {/* FOTOS ANTIGAS (Legacy) */}
+            {/* GALERIA DE IMAGENS (UPLOAD MANUAL) */}
             {selectedNode.images?.length > 0 && (
                 <div className="grid grid-cols-2 gap-2 mb-4">
                     {selectedNode.images.map((img: string, idx: number) => (
@@ -215,10 +247,20 @@ export default function Home() {
             <div className="flex gap-1">
                 <button onClick={triggerColorPicker} className="w-8 h-8 hover:bg-purple-100 text-purple-600 rounded flex items-center justify-center transition" title="Mudar Cor"><Palette size={16} /></button>
                 <input ref={colorInputRef} type="color" onChange={handleColorChange} className="hidden" />
+                
                 <button id="save-btn" onClick={handleSave} className="w-8 h-8 hover:bg-green-100 text-green-700 rounded flex items-center justify-center transition" title="Salvar Alterações"><Save size={16} /></button>
+                
                 <button onClick={addNewNode} className="w-8 h-8 hover:bg-gray-200 text-gray-700 rounded flex items-center justify-center transition" title="Subtópico"><Plus size={16} /></button>
+                
                 <button onClick={() => setIsLinkingMode(true)} className={`w-8 h-8 rounded flex items-center justify-center transition ${isLinkingMode ? 'bg-blue-600 text-white' : 'hover:bg-gray-200 text-gray-700'}`} title="Conectar"><LinkIcon size={16} /></button>
+                
                 <button onClick={deleteNode} className="w-8 h-8 hover:bg-red-100 text-red-600 rounded flex items-center justify-center transition" title="Deletar"><Trash2 size={16} /></button>
+                
+                {/* BOTÃO DE UPLOAD REATIVADO */}
+                <label className="w-8 h-8 hover:bg-blue-100 text-blue-600 rounded flex items-center justify-center transition cursor-pointer" title="Adicionar Imagem">
+                    <ImageIcon size={16} />
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                </label>
             </div>
             <div onMouseDown={startResize} className="cursor-nwse-resize text-gray-400 hover:text-blue-500 p-2" title="Puxe para redimensionar"><Maximize2 size={16} /></div>
           </div>
