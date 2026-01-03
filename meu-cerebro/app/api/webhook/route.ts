@@ -11,40 +11,35 @@ export async function POST(request: Request) {
     // 1. Ler os dados que o Twilio mandou
     const formData = await request.formData();
     const body = formData.get("Body")?.toString() || "";
-    const mediaUrl = formData.get("MediaUrl0")?.toString() || null; // Pega a foto se tiver
+    const mediaUrl = formData.get("MediaUrl0")?.toString() || null; 
     
     console.log("Mensagem recebida:", body);
-    console.log("Imagem recebida:", mediaUrl);
 
-    // 2. A Mágica do "Split" (Separar por >)
-    // Formato esperado: Categoria > Tópico > Conteúdo
+    // 2. Separar por >
     const parts = body.split(">").map((p) => p.trim());
 
-    // Se o usuário mandou só uma palavra, tratamos como antes (apenas um nó solto)
     if (parts.length < 2) {
-       return NextResponse.json({ message: "Formato simples recebido. Use: Categoria > Tópico" });
+       return NextResponse.json({ message: "Formato simples recebido." });
     }
 
-    const categoryName = parts[0]; // Ex: Projetos
-    const topicName = parts[1];    // Ex: Site Novo
-    const contentText = parts[2] || ""; // Ex: Mudar cor do botão (pode ser vazio)
+    const categoryName = parts[0]; 
+    const topicName = parts[1];    
+    const contentText = parts[2] || ""; 
 
-    // --- PASSO A: Lidar com a Categoria (O Pai) ---
-    // Verifica se a categoria já existe
+    // --- PASSO A: Categoria ---
     let { data: parentNode } = await supabase
       .from("nodes")
       .select("id")
       .eq("label", categoryName)
       .single();
 
-    // Se não existe, cria a categoria
     if (!parentNode) {
       const { data: newParent, error: parentError } = await supabase
         .from("nodes")
         .insert([{ 
-            id: categoryName.toLowerCase().replace(/\s/g, '-'), // id amigável
+            id: categoryName.toLowerCase().replace(/\s/g, '-'),
             label: categoryName, 
-            group: "category" // Define cor diferente pra categoria
+            group: "category" 
         }])
         .select()
         .single();
@@ -53,8 +48,8 @@ export async function POST(request: Request) {
       parentNode = newParent;
     }
 
-    // --- PASSO B: Criar o Tópico (O Filho) com Conteúdo e Foto ---
-    const topicId = topicName.toLowerCase().replace(/\s/g, '-') + '-' + Date.now(); // ID único
+    // --- PASSO B: Tópico ---
+    const topicId = topicName.toLowerCase().replace(/\s/g, '-') + '-' + Date.now();
 
     const { data: newNode, error: nodeError } = await supabase
       .from("nodes")
@@ -62,24 +57,26 @@ export async function POST(request: Request) {
           id: topicId,
           label: topicName, 
           group: "topic",
-          content: contentText, // Salva o texto descritivo
-          image_url: mediaUrl   // Salva o link da foto do Whatsapp
+          content: contentText, 
+          image_url: mediaUrl   
       }])
       .select()
       .single();
 
     if (nodeError) throw nodeError;
 
-    // --- PASSO C: Criar a Conexão (Link) ---
-    // Liga a Categoria ao Tópico
-    const { error: linkError } = await supabase
-      .from("links")
-      .insert([{ 
-          source: parentNode.id, 
-          target: newNode.id 
-      }]);
+    // --- CORREÇÃO AQUI EMBAIXO ---
+    // Adicionamos uma verificação de segurança
+    if (parentNode && newNode) {
+        const { error: linkError } = await supabase
+        .from("links")
+        .insert([{ 
+            source: parentNode.id, // Agora ele sabe que existe
+            target: newNode.id 
+        }]);
 
-    if (linkError) throw linkError;
+        if (linkError) throw linkError;
+    }
 
     return NextResponse.json({ message: "Cérebro atualizado com sucesso!" });
 
