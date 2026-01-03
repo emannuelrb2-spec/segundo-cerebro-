@@ -18,7 +18,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
 export default function Home() {
-  const graphRef = useRef<null>();
+  const graphRef = useRef<any>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
 
   const [data, setData] = useState({ nodes: [] as any[], links: [] as any[] });
