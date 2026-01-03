@@ -1,5 +1,5 @@
 "use client";
-
+// Atualizando site
 import { useState, useRef, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { createClient } from "@supabase/supabase-js"; 
