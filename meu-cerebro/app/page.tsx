@@ -20,6 +20,7 @@ export default function Home() {
   const [isLinkingMode, setIsLinkingMode] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   
+  // Janela maior por padrão para caber mais texto
   const [winState, setWinState] = useState({ x: 50, y: 50, w: 500, h: 600 });
   const [dragMode, setDragMode] = useState<null | 'move' | 'resize'>(null);
   const dragStart = useRef({ mouseX: 0, mouseY: 0, winX: 0, winY: 0, winW: 0, winH: 0 });
@@ -60,7 +61,7 @@ export default function Home() {
     }
   }
 
-  // --- FUNÇÃO PARA ADICIONAR OU REMOVER LINHA ---
+  // --- FUNÇÃO PARA ADICIONAR OU REMOVER LINHA (LINK TOGGLE) ---
   const handleLinkToggle = async (targetNode: any) => {
     if (!selectedNode || targetNode.id === selectedNode.id) return;
 
@@ -72,10 +73,10 @@ export default function Home() {
       .maybeSingle();
 
     if (existingLink) {
-      // Se existe, apaga (Tira linha)
-      await supabase.from('links').delete().match({ id: existingLink.id });
+      // Se existe, deletamos para tirar a linha
+      await supabase.from('links').delete().match({ source: existingLink.source, target: existingLink.target });
     } else {
-      // Se não existe, cria (Põe linha)
+      // Se não existe, criamos para colocar a linha
       await supabase.from('links').insert([{ source: selectedNode.id, target: targetNode.id }]);
     }
     setIsLinkingMode(false);
@@ -109,6 +110,21 @@ export default function Home() {
     }
   };
 
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && selectedNode) {
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            const imgUrl = ev.target?.result as string;
+            const newImages = [...(selectedNode.images || []), imgUrl];
+            selectedNode.images = newImages;
+            setData({...data});
+            await supabase.from('nodes').update({ images: newImages }).eq('id', selectedNode.id);
+        };
+        reader.readAsDataURL(file);
+    }
+  };
+
   // --- ARRASTAR E REDIMENSIONAR ---
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -131,7 +147,7 @@ export default function Home() {
 
   return (
     <main className="relative w-screen h-screen bg-[#F3F4F6] overflow-hidden">
-      {isLinkingMode && <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-6 py-2 rounded-full shadow-lg z-50 animate-pulse flex items-center gap-2"><LinkIcon size={16}/> Clique em outro nó para ligar/desligar</div>}
+      {isLinkingMode && <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-6 py-2 rounded-full shadow-lg z-50 animate-pulse flex items-center gap-2"><LinkIcon size={16}/> Clique em outro nó para ligar ou desligar a linha</div>}
       
       <div className="absolute inset-0">
         <ForceGraph2D ref={graphRef} graphData={data} nodeLabel="label" nodeColor={(node: any) => isLinkingMode ? "#3b82f6" : node.color} nodeRelSize={6} linkColor={() => "#d1d5db"} backgroundColor="#F3F4F6" onNodeClick={handleNodeClick} />
@@ -144,11 +160,10 @@ export default function Home() {
             <button onClick={() => setSelectedNode(null)} className="p-1 hover:bg-red-100 hover:text-red-500 rounded"><X size={20} /></button>
           </div>
           
-          {/* CONTEÚDO COM ÁREA DE TEXTO FLEXÍVEL */}
-          <div className="flex-1 p-6 flex flex-col min-h-0">
+          <div className="flex-1 p-6 flex flex-col min-h-0 overflow-hidden">
             <input type="text" value={selectedNode.label || selectedNode.name} onChange={(e) => {selectedNode.label = e.target.value; setData({...data})}} className="text-2xl font-bold w-full bg-transparent outline-none mb-4" />
             
-            {/* O SEGREDO: h-full e flex-1 faz ele ocupar todo o espaço */}
+            {/* TEXTAREA FLEXÍVEL: Agora ele estica conforme você redimensiona a janela */}
             <textarea 
                 value={noteContent} 
                 onChange={(e) => setNoteContent(e.target.value)} 
@@ -157,8 +172,8 @@ export default function Home() {
             />
 
             {selectedNode.image_url && (
-                <div className="mt-4 rounded-lg overflow-hidden border border-gray-200 max-h-40">
-                    <img src={selectedNode.image_url} className="w-full object-cover" />
+                <div className="mt-4 rounded-lg overflow-hidden border border-gray-200 flex-shrink-0">
+                    <img src={selectedNode.image_url} className="w-full h-40 object-cover" />
                 </div>
             )}
           </div>
@@ -170,6 +185,10 @@ export default function Home() {
                 <button id="save-btn" onClick={handleSave} className="w-8 h-8 hover:bg-green-100 text-green-700 rounded flex items-center justify-center transition"><Save size={16} /></button>
                 <button onClick={() => setIsLinkingMode(true)} className={`w-8 h-8 rounded flex items-center justify-center transition ${isLinkingMode ? 'bg-blue-600 text-white' : 'hover:bg-gray-200 text-gray-700'}`}><LinkIcon size={16} /></button>
                 <button onClick={() => { if(confirm("Deletar?")) { supabase.from('nodes').delete().eq('id', selectedNode.id).then(() => setSelectedNode(null)); } }} className="w-8 h-8 hover:bg-red-100 text-red-600 rounded flex items-center justify-center transition"><Trash2 size={16} /></button>
+                <label className="w-8 h-8 hover:bg-blue-100 text-blue-600 rounded flex items-center justify-center transition cursor-pointer">
+                    <ImageIcon size={16} />
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                </label>
             </div>
             <div onMouseDown={startResize} className="cursor-nwse-resize text-gray-400 p-2"><Maximize2 size={16} /></div>
           </div>
