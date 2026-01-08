@@ -11,13 +11,15 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
     "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-force-graph-2d": "^1.29.0",
+    "recharts": "^3.6.0",
     "tailwind-merge": "^3.4.0",
-    "twilio": "^5.11.1"
+    "twilio": "^5.11.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
