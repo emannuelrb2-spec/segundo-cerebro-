@@ -12,12 +12,11 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// --- 🇧🇷 FUSO HORÁRIO BRASIL MANUAL ---
-// Força -3 horas do UTC para garantir a data correta na Vercel
+// --- 🇧🇷 FUSO HORÁRIO BRASIL (CORREÇÃO DEFINITIVA) ---
 function getBrazilDate() {
-  const now = new Date();
-  // Subtrai 3 horas do horário atual do servidor (UTC)
-  return new Date(now.getTime() - (3 * 60 * 60 * 1000));
+  // Pega a string de data no fuso de SP
+  const dateString = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" });
+  return new Date(dateString);
 }
 
 // --- EXTRAIR DADOS ---
