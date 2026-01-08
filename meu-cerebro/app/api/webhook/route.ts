@@ -13,10 +13,19 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// --- FUNÇÃO DE AJUDA: EXTRAIR DATA/HORA ---
+// --- 🇧🇷 FUNÇÃO MÁGICA DE FUSO HORÁRIO ---
+// Garante que tudo aconteça no horário de Brasília
+function getBrazilDate() {
+  const now = new Date();
+  // Converte a hora do servidor (UTC) para a hora de São Paulo
+  const brazilTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+  return brazilTime;
+}
+
+// --- EXTRAIR DATA ---
 function extractBookingDetails(text: string) {
   let cleanText = text.toLowerCase();
-  const today = new Date();
+  const today = getBrazilDate(); // Usa hora do Brasil
   let targetDate = today;
   let targetTime = "";
   
@@ -48,7 +57,6 @@ function extractBookingDetails(text: string) {
 // --- ROTA PRINCIPAL ---
 export async function POST(req: Request) {
   try {
-    // 1. Receber dados do Twilio ou Teste
     const contentType = req.headers.get('content-type') || '';
     let message = "";
     let sender = "";
@@ -70,12 +78,14 @@ export async function POST(req: Request) {
     const cleanMessage = message.trim();
     const firstWord = cleanMessage.split(" ")[0].toLowerCase();
     let responseText = "";
+    
+    // DATA BASE DO BRASIL PARA TUDO
+    const todayBrazil = getBrazilDate();
+    const dateKey = format(todayBrazil, "yyyy-MM-dd");
 
     // ============================================================
-    // PARTE 1: INTELIGÊNCIA NOVA (Status, Agenda, Check)
+    // 1. AGENDAR
     // ============================================================
-
-    // -> AGENDAR
     if (firstWord === "agendar") {
       const { targetDate, targetTime, title } = extractBookingDetails(message);
       if (targetDate && targetTime && title) {
@@ -90,36 +100,51 @@ export async function POST(req: Request) {
       }
     }
 
-    // -> CHECK / FEITO
+    // ============================================================
+    // 2. CHECK / FEITO (Atenção aqui!)
+    // ============================================================
     else if (firstWord === "check" || firstWord === "feito") {
       const habitName = message.substring(message.indexOf(" ") + 1).toLowerCase();
-      const dateKey = format(new Date(), "yyyy-MM-dd");
+      
       const { data: habits } = await supabase.from('nodes').select('*').eq('group', 'habit');
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(habitName));
 
       if (targetHabit) {
-        await supabase.from('nodes').insert([{
-            id: `check_${dateKey}_${targetHabit.id}_0`,
-            label: `Check ${targetHabit.label}`, group: 'habit_check', due_date: dateKey, content: targetHabit.id
+        // O "_0" no final significa que marcamos a PRIMEIRA caixinha
+        const checkId = `check_${dateKey}_${targetHabit.id}_0`;
+        
+        // Verifica se já não estava marcado para não duplicar
+        const { error } = await supabase.from('nodes').insert([{
+            id: checkId,
+            label: `Check ${targetHabit.label}`, 
+            group: 'habit_check', 
+            due_date: dateKey, 
+            content: targetHabit.id
         }]);
-        responseText = `🔥 Hábito "${targetHabit.label}" marcado!`;
+
+        if (!error) {
+            responseText = `🔥 Hábito "${targetHabit.label}" marcado para hoje (${format(todayBrazil, 'dd/MM')})!`;
+        } else {
+            responseText = `⚠️ "${targetHabit.label}" já estava marcado ou deu erro.`;
+        }
       } else {
-        responseText = `❌ Hábito não encontrado. Tente: ${habits?.map(h => h.label).join(", ")}`;
+        responseText = `❌ Hábito não encontrado.`;
       }
     }
 
-    // -> STATUS (Relatório Inteligente)
+    // ============================================================
+    // 3. STATUS
+    // ============================================================
     else if (firstWord === "status" || firstWord === "resumo") {
-      const todayKey = format(new Date(), "yyyy-MM-dd");
       const { data: hbs } = await supabase.from('nodes').select('id, label').eq('group', 'habit');
-      const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', todayKey);
-      const { data: apps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso').ilike('due_date', `${todayKey}%`);
+      const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', dateKey);
+      const { data: apps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso').ilike('due_date', `${dateKey}%`);
       const { data: aChecks } = await supabase.from('nodes').select('content').eq('group', 'app_check');
 
       const pendingH = hbs?.filter(h => !hChecks?.some(c => c.content === h.id)) || [];
       const pendingA = apps?.filter(a => !aChecks?.some(c => c.content === a.id)) || [];
 
-      responseText = `📊 *Status (${format(new Date(), 'dd/MM')}):*\n\n`;
+      responseText = `📊 *Status (${format(todayBrazil, 'dd/MM')}):*\n\n`;
       if (pendingH.length === 0 && pendingA.length === 0 && (hbs?.length||0) > 0) {
           responseText += "🎉 TUDO FEITO! 🔥";
       } else {
@@ -128,18 +153,24 @@ export async function POST(req: Request) {
       }
     }
 
-    // -> DIÁRIO (Simples)
+    // ============================================================
+    // 4. DIÁRIO
+    // ============================================================
     else if (["diário", "diario", "reflexão"].includes(firstWord)) {
         const content = message.substring(message.indexOf(" ") + 1);
-        const dateKey = format(new Date(), "yyyy-MM-dd");
+        
         const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', dateKey).maybeSingle();
-        if (existing) await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
-        else await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
-        responseText = "📝 Salvo no diário.";
+        
+        if (existing) {
+            await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
+        } else {
+            await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
+        }
+        responseText = `📝 Salvo no diário de ${format(todayBrazil, 'dd/MM')}.`;
     }
 
     // ============================================================
-    // PARTE 2: INTELIGÊNCIA ANTIGA (Criação de Tópicos com '>')
+    // 5. TÓPICOS (ANTIGO)
     // ============================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
@@ -148,7 +179,6 @@ export async function POST(req: Request) {
             const topicName = parts[1];
             const contentText = parts[2] || "";
 
-            // 1. Acha ou cria Categoria
             let { data: parentNode } = await supabase.from("nodes").select("id").eq("label", categoryName).maybeSingle();
             if (!parentNode) {
                 const { data: newParent } = await supabase.from("nodes").insert([{ 
@@ -158,14 +188,12 @@ export async function POST(req: Request) {
                 parentNode = newParent;
             }
 
-            // 2. Cria Tópico
             const topicId = topicName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
             const { data: newNode } = await supabase.from("nodes").insert([{ 
                 id: topicId, label: topicName, group: "topic",
                 content: contentText, image_url: mediaUrl, color: "#6b7280"
             }]).select().single();
 
-            // 3. Linka
             if (parentNode && newNode) {
                 await supabase.from("links").insert([{ source: parentNode.id, target: newNode.id }]);
             }
@@ -174,12 +202,11 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // PARTE 3: ENVIO DA RESPOSTA (CORRIGIDO)
+    // ENVIO DA RESPOSTA
     // ============================================================
-    
     if (responseText) {
         await twilioClient.messages.create({
-            from: process.env.TWILIO_WHATSAPP_NUMBER, // <--- AQUI ESTAVA O SEGREDO!
+            from: process.env.TWILIO_WHATSAPP_NUMBER,
             to: sender,
             body: responseText
         });
