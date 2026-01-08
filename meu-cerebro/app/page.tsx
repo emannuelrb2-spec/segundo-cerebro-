@@ -50,7 +50,7 @@ export default function Home() {
       const checkNodes = nodesData.filter(n => n.group === 'habit_check'); 
       const appCheckNodes = nodesData.filter(n => n.group === 'app_check'); 
 
-      // Neural Graph Data
+      // Graph Data
       const graphNodes = nodesData.filter(n => ['compromisso', 'daily_log', 'habit', 'habit_check', 'app_check'].indexOf(n.group) === -1);
       const { data: linksData } = await supabase.from('links').select('*');
       if(linksData) {
@@ -68,23 +68,17 @@ export default function Home() {
           try { return { id: h.id, ...JSON.parse(h.content || "{}") }; } catch(e) { return null; }
       }).filter(Boolean));
 
-      // --- CORREÇÃO DEFINITIVA DE LEITURA DOS CHECKS ---
-      // Em vez de ler o ID string, lemos o CONTEÚDO (que é o ID do hábito) e a DATA.
+      // --- CORREÇÃO DE LEITURA (O PULO DO GATO) ---
       const checksMap: Record<string, boolean> = {};
-      
       checkNodes.forEach(c => {
           if (c.due_date && c.content) {
-             // c.content guarda o ID do hábito (ex: habit_123)
-             // c.due_date guarda a data (ex: 2026-01-08)
-             
-             // Por padrão, o WhatsApp marca a coluna 0. 
-             // Se o ID do check tiver um sufixo diferente (ex: ...-1), tentamos pegar.
              let colIndex = 0;
-             if (c.id.endsWith("-1") || c.id.endsWith("_1")) colIndex = 1;
-             if (c.id.endsWith("-2") || c.id.endsWith("_2")) colIndex = 2;
-             if (c.id.endsWith("-3") || c.id.endsWith("_3")) colIndex = 3;
-
-             // Chave visual: DATA-IDHABITO-COLUNA
+             const parts = c.id.split(/[-_]/);
+             const lastPart = parts[parts.length - 1];
+             if (['0','1','2','3'].includes(lastPart)) {
+                colIndex = parseInt(lastPart);
+             }
+             // Chave visual: DATA - ID_HABITO - COLUNA
              const visualKey = `${c.due_date}-${c.content}-${colIndex}`;
              checksMap[visualKey] = true;
           }
@@ -106,16 +100,15 @@ export default function Home() {
     }
   }
 
-  // --- TOGGLE DO CHECK ---
+  // --- TOGGLE HABIT ---
   const toggleHabitCheck = async (date: Date, habitId: string, colIndex: number) => {
     const dateKey = format(date, 'yyyy-MM-dd');
     const visualKey = `${dateKey}-${habitId}-${colIndex}`;
     const isCheckedNow = !checkedHabits[visualKey]; 
 
-    // Atualiza Visualmente Imediatamente
     setCheckedHabits(prev => ({ ...prev, [visualKey]: isCheckedNow }));
 
-    // Define ID padronizado (Novo formato com hífen)
+    // Formato Hífen (igual ao WhatsApp)
     const dbId = `check_${dateKey}_${habitId}-${colIndex}`; 
     
     if (isCheckedNow) {
@@ -124,11 +117,11 @@ export default function Home() {
             label: 'Check',
             group: 'habit_check',
             due_date: dateKey,
-            content: habitId // Salva o ID do hábito explicitamente
+            content: habitId 
         }]);
     } else {
         await supabase.from('nodes').delete().eq('id', dbId);
-        // Tenta deletar formato antigo (underline) caso exista
+        // Fallback: Tenta deletar formato antigo
         await supabase.from('nodes').delete().eq('id', `check_${dateKey}_${habitId}_${colIndex}`);
     }
   };
@@ -273,6 +266,7 @@ export default function Home() {
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file && selectedNode) { const r = new FileReader(); r.onload = async (event) => { const imgUrl = event.target?.result as string; const newImages = [...(selectedNode.images || []), imgUrl]; selectedNode.images = newImages; setData({...data}); await supabase.from('nodes').update({ images: newImages }).eq('id', selectedNode.id); }; r.readAsDataURL(file); } };
   const handleDeleteImage = async (imgUrl: string) => { if (!selectedNode) return; if(confirm("Remover?")) { const newImages = selectedNode.images.filter((i: string) => i !== imgUrl); selectedNode.images = newImages; setData({...data}); await supabase.from('nodes').update({ images: newImages }).eq('id', selectedNode.id); } };
   const triggerColorPicker = () => { colorInputRef.current?.click(); };
+  
   useEffect(() => { const hM = (e: MouseEvent) => { if (!dragMode) return; e.preventDefault(); const dX = e.clientX - dragStart.current.mouseX, dY = e.clientY - dragStart.current.mouseY; if (dragMode === 'move') setWinState(p => ({ ...p, x: dragStart.current.winX + dX, y: dragStart.current.winY + dY })); else setWinState(p => ({ ...p, w: Math.max(300, dragStart.current.winW + dX), h: Math.max(300, dragStart.current.winH + dY) })); }; const hU = () => { setDragMode(null); document.body.style.cursor = 'default'; }; if (dragMode) { window.addEventListener('mousemove', hM); window.addEventListener('mouseup', hU); } return () => { window.removeEventListener('mousemove', hM); window.removeEventListener('mouseup', hU); }; }, [dragMode]);
   const startMove = (e: React.MouseEvent) => { setDragMode('move'); dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, winX: winState.x, winY: winState.y, winW: winState.w, winH: winState.h }; };
   const startResize = (e: React.MouseEvent) => { e.stopPropagation(); setDragMode('resize'); dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, winX: winState.x, winY: winState.y, winW: winState.w, winH: winState.h }; };
