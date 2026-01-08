@@ -174,13 +174,12 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // PARTE 3: ENVIO DA RESPOSTA
+    // PARTE 3: ENVIO DA RESPOSTA (CORRIGIDO)
     // ============================================================
     
     if (responseText) {
-        // Se formou uma resposta, envia
         await twilioClient.messages.create({
-            from: process.env.TWILIO_PHONE_NUMBER,
+            from: process.env.TWILIO_WHATSAPP_NUMBER, // <--- AQUI ESTAVA O SEGREDO!
             to: sender,
             body: responseText
         });
