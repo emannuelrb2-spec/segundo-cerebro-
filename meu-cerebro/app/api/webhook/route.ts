@@ -3,32 +3,29 @@ import { NextResponse } from "next/server";
 import { addDays, format } from "date-fns";
 import twilio from "twilio";
 
-// --- CONFIGURAÇÕES DE AMBIENTE ---
+// --- CONFIGURAÇÕES ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// CLIENTE TWILIO (Usa as variáveis que vi no seu print da Vercel)
+// --- TWILIO CLIENT ---
+// Usa as chaves do ambiente
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// IMPORTANTE: O número que envia. No seu print estava TWILIO_WHATSAPP_NUMBER
-const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; 
-
-// --- 🇧🇷 CORREÇÃO DE FUSO HORÁRIO (CRUCIAL) ---
-// O servidor da Vercel roda em UTC (+3h que o Brasil). 
-// Essa função garante que pegamos a hora exata de Brasília.
+// --- 🇧🇷 CORREÇÃO DE FUSO HORÁRIO ---
+// Garante que o servidor (UTC) entenda que estamos no Brasil (-3h)
 function getBrazilDate() {
   const dateString = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" });
   return new Date(dateString);
 }
 
-// --- FUNÇÃO DE EXTRAÇÃO DE COMANDOS ---
+// --- FUNÇÃO AUXILIAR: EXTRAIR DADOS ---
 function extractBookingDetails(text: string) {
   let cleanText = text.toLowerCase();
-  const today = getBrazilDate(); // Usa hora Brasil
+  const today = getBrazilDate(); 
   let targetDate = today;
   let targetTime = "";
   
@@ -54,20 +51,18 @@ function extractBookingDetails(text: string) {
   }
 
   let title = cleanText.replace("agendar", "").replace(/\s(às|as|para|o|a)\s/g, " ").replace(/\s+/g, " ").trim();
-  // Capitaliza a primeira letra
-  title = title.charAt(0).toUpperCase() + title.slice(1);
-  return { targetDate, targetTime, title };
+  return { targetDate, targetTime, title: title.charAt(0).toUpperCase() + title.slice(1) };
 }
 
-// --- ROTA PRINCIPAL (WEBHOOK) ---
+// --- ROTA PRINCIPAL ---
 export async function POST(req: Request) {
   try {
-    // 1. Receber dados (Suporta JSON de teste ou FormData do Twilio)
     const contentType = req.headers.get('content-type') || '';
     let message = "";
     let sender = "";
     let mediaUrl = null;
 
+    // Suporte para teste local e Twilio real
     if (contentType.includes('application/json')) {
         const body = await req.json();
         message = body.message;
@@ -85,15 +80,13 @@ export async function POST(req: Request) {
     const firstWord = cleanMessage.split(" ")[0].toLowerCase();
     let responseText = "";
     
-    // DEFINIR "HOJE" NO BRASIL
+    // Define a data de hoje no Brasil
     const todayBrazil = getBrazilDate();
     const dateKey = format(todayBrazil, "yyyy-MM-dd");
 
     // ============================================================
-    // LÓGICA DE COMANDOS
-    // ============================================================
-
     // 1. AGENDAR
+    // ============================================================
     if (firstWord === "agendar") {
       const { targetDate, targetTime, title } = extractBookingDetails(message);
       if (targetDate && targetTime && title) {
@@ -108,43 +101,35 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. CHECK / FEITO
+    // ============================================================
+    // 2. CHECK (HÁBITOS)
+    // ============================================================
     else if (firstWord === "check" || firstWord === "feito") {
       const habitName = message.substring(message.indexOf(" ") + 1).toLowerCase();
-      // Busca hábitos
       const { data: habits } = await supabase.from('nodes').select('*').eq('group', 'habit');
-      // Tenta encontrar pelo nome (ex: "acad" acha "academia")
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(habitName));
 
       if (targetHabit) {
-        // ID usando HÍFEN (-0) para casar com o frontend atualizado
+        // Usa HÍFEN no ID para casar com o Frontend
         const checkId = `check_${dateKey}_${targetHabit.id}-0`; 
         
-        // Verifica duplicidade
-        const { error } = await supabase.from('nodes').insert([{
+        await supabase.from('nodes').insert([{
             id: checkId,
-            label: `Check ${targetHabit.label}`, 
-            group: 'habit_check', 
-            due_date: dateKey, 
-            content: targetHabit.id
+            label: `Check ${targetHabit.label}`, group: 'habit_check', 
+            due_date: dateKey, content: targetHabit.id
         }]);
-
-        if (!error) {
-            responseText = `🔥 Hábito "${targetHabit.label}" marcado para hoje (${format(todayBrazil, 'dd/MM')})!`;
-        } else {
-            responseText = `⚠️ Hábito já estava marcado!`;
-        }
+        responseText = `🔥 Hábito "${targetHabit.label}" marcado para hoje (${format(todayBrazil, 'dd/MM')})!`;
       } else {
-        responseText = `❌ Hábito não encontrado. Tente: ${habits?.map(h => h.label).join(", ")}`;
+        responseText = `❌ Hábito não encontrado.`;
       }
     }
 
-    // 3. STATUS / RESUMO
+    // ============================================================
+    // 3. STATUS (RESUMO DO DIA)
+    // ============================================================
     else if (firstWord === "status" || firstWord === "resumo") {
       const { data: hbs } = await supabase.from('nodes').select('id, label').eq('group', 'habit');
-      // Busca checks do dia
       const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', dateKey);
-      // Busca compromissos do dia
       const { data: apps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso').ilike('due_date', `${dateKey}%`);
       const { data: aChecks } = await supabase.from('nodes').select('content').eq('group', 'app_check');
 
@@ -152,75 +137,57 @@ export async function POST(req: Request) {
       const pendingA = apps?.filter(a => !aChecks?.some(c => c.content === a.id)) || [];
 
       responseText = `📊 *Status (${format(todayBrazil, 'dd/MM')}):*\n\n`;
-      
-      const nothingPending = pendingH.length === 0 && pendingA.length === 0;
-      const hasItems = (hbs?.length || 0) > 0 || (apps?.length || 0) > 0;
-
-      if (nothingPending && hasItems) {
-          responseText += "🎉 TUDO FEITO! Você é uma máquina. 🔥";
+      if (pendingH.length === 0 && pendingA.length === 0 && (hbs?.length||0) > 0) {
+          responseText += "🎉 TUDO FEITO! Você destruiu hoje. 🔥";
       } else {
-          if (pendingH.length > 0) responseText += `⚠️ *Hábitos Pendentes:*\n` + pendingH.map(h => `[ ] ${h.label}`).join("\n");
-          if (pendingA.length > 0) responseText += `\n📅 *Agenda Pendente:*\n` + pendingA.map(a => `[ ] ${a.label}`).join("\n");
-          if (!hasItems) responseText += "Nada agendado para hoje.";
+          if (pendingH.length > 0) responseText += `⚠️ *Falta:* \n` + pendingH.map(h => `[ ] ${h.label}`).join("\n");
+          if (pendingA.length > 0) responseText += `\n📅 *Agenda:* \n` + pendingA.map(a => `[ ] ${a.label}`).join("\n");
       }
     }
 
+    // ============================================================
     // 4. DIÁRIO / REFLEXÃO
-    else if (["diário", "diario", "reflexão"].includes(firstWord)) {
+    // ============================================================
+    else if (["diário", "diario", "reflexão", "reflexao"].includes(firstWord)) {
         const content = message.substring(message.indexOf(" ") + 1);
         const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', dateKey).maybeSingle();
         
-        if (existing) {
-            await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
-        } else {
-            await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
-        }
+        if (existing) await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
+        else await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
         responseText = `📝 Salvo no diário de ${format(todayBrazil, 'dd/MM')}.`;
     }
 
+    // ============================================================
     // 5. TÓPICOS (Formato Antigo com >)
+    // ============================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
         if (parts.length >= 2) {
-            const categoryName = parts[0];
-            const topicName = parts[1];
-            const contentText = parts[2] || "";
-
-            let { data: parentNode } = await supabase.from("nodes").select("id").eq("label", categoryName).maybeSingle();
-            if (!parentNode) {
-                const { data: newParent } = await supabase.from("nodes").insert([{ 
-                    id: categoryName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-                    label: categoryName, group: "category", color: "#ef4444"
-                }]).select().single();
-                parentNode = newParent;
-            }
-
-            const topicId = topicName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-            const { data: newNode } = await supabase.from("nodes").insert([{ 
-                id: topicId, label: topicName, group: "topic",
-                content: contentText, image_url: mediaUrl, color: "#6b7280"
-            }]).select().single();
-
-            if (parentNode && newNode) {
-                await supabase.from("links").insert([{ source: parentNode.id, target: newNode.id }]);
-            }
-            responseText = `🔗 Conexão criada: ${categoryName} > ${topicName}`;
+            const [cat, top, txt] = parts;
+            let { data: parent } = await supabase.from("nodes").select("id").eq("label", cat).maybeSingle();
+            if (!parent) { const { data: np } = await supabase.from("nodes").insert([{ id: `cat_${Date.now()}`, label: cat, group: "category", color: "#ef4444" }]).select().single(); parent = np; }
+            const { data: nn } = await supabase.from("nodes").insert([{ id: `node_${Date.now()}`, label: top, group: "topic", content: txt || "", image_url: mediaUrl, color: "#6b7280" }]).select().single();
+            if (parent && nn) await supabase.from("links").insert([{ source: parent.id, target: nn.id }]);
+            responseText = `🔗 Conexão criada: ${cat} > ${top}`;
         }
     }
 
     // ============================================================
-    // ENVIO DA RESPOSTA
+    // 6. ENVIO DA RESPOSTA (CORRIGIDO PARA SUAS VARIÁVEIS)
     // ============================================================
     
     if (responseText && sender !== "teste_local") {
-        if (!BOT_NUMBER) {
-            console.error("ERRO CRÍTICO: Variável TWILIO_WHATSAPP_NUMBER não encontrada no .env");
-        } else {
+        // Pega o número do robô da variável certa
+        const botNumber = process.env.TWILIO_WHATSAPP_NUMBER; 
+
+        if (botNumber) {
             await twilioClient.messages.create({
-                from: BOT_NUMBER,
+                from: botNumber,
                 to: sender,
                 body: responseText
             });
+        } else {
+            console.error("ERRO: Variável TWILIO_WHATSAPP_NUMBER não encontrada na Vercel.");
         }
     }
 
