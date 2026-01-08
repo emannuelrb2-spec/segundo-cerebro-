@@ -502,7 +502,7 @@ export default function Home() {
                             const hasEvent = appointments.some(app => isSameDay(app.date, day));
                             const isCurrentDay = isToday(day);
                             return (
-                                <div key={idx} className="clickable-area" onClick={() => openDayDetails(day)} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', borderRadius: '50%', backgroundColor: hasEvent ? 'black' : (isCurrentDay ? '#e5e7eb' : 'transparent'), color: hasEvent ? 'white' : (isSameMonth(day, currentMonth) ? 'black' : '#d1d5db'), fontWeight: hasEvent || isCurrentDay ? 'bold' : 'normal', cursor: 'pointer', transition: 'transform 0.1s' }} onMouseDown={(e) => e.target.style.transform = "scale(0.9)"} onMouseUp={(e) => e.target.style.transform = "scale(1)"}>{format(day, 'd')}</div>
+                                <div key={idx} className="clickable-area" onClick={() => openDayDetails(day)} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', borderRadius: '50%', backgroundColor: hasEvent ? 'black' : (isCurrentDay ? '#e5e7eb' : 'transparent'), color: hasEvent ? 'white' : (isSameMonth(day, currentMonth) ? 'black' : '#d1d5db'), fontWeight: hasEvent || isCurrentDay ? 'bold' : 'normal', cursor: 'pointer', transition: 'transform 0.1s' }} onMouseDown={(e) => (e.currentTarget as HTMLElement).style.transform = "scale(0.9)"} onMouseUp={(e) => (e.currentTarget as HTMLElement).style.transform = "scale(1)"}>{format(day, 'd')}</div>
                             )
                         })}
                     </div>
@@ -636,10 +636,9 @@ export default function Home() {
         </div>
       )}
 
-      {/* --- NEURAL (ACERVO) - MANTIDO --- */}
+      {/* --- NEURAL (ACERVO) --- */}
       {view === 'neural' && (
         <main style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#F3F4F6', overflow: 'hidden' }}>
-          {/* MANTIDO O CÓDIGO DO NEURAL INTACTO */}
           {expandedImage && (
             <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setExpandedImage(null)}>
                 <button onClick={() => setExpandedImage(null)} style={{ position: 'absolute', top: '32px', right: '32px', background: 'transparent', border: 'none', color: 'white', cursor: 'pointer' }}><X size={48} /></button>
