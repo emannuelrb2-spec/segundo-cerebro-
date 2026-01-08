@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { addDays, format } from "date-fns";
 import twilio from "twilio";
 
-// --- CONFIGURAÇÕES ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -13,19 +12,18 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// --- 🇧🇷 FUNÇÃO MÁGICA DE FUSO HORÁRIO ---
-// Garante que tudo aconteça no horário de Brasília
+// --- 🇧🇷 FUSO HORÁRIO BRASIL MANUAL ---
+// Força -3 horas do UTC para garantir a data correta na Vercel
 function getBrazilDate() {
   const now = new Date();
-  // Converte a hora do servidor (UTC) para a hora de São Paulo
-  const brazilTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
-  return brazilTime;
+  // Subtrai 3 horas do horário atual do servidor (UTC)
+  return new Date(now.getTime() - (3 * 60 * 60 * 1000));
 }
 
-// --- EXTRAIR DATA ---
+// --- EXTRAIR DADOS ---
 function extractBookingDetails(text: string) {
   let cleanText = text.toLowerCase();
-  const today = getBrazilDate(); // Usa hora do Brasil
+  const today = getBrazilDate(); // Usa a hora corrigida
   let targetDate = today;
   let targetTime = "";
   
@@ -54,18 +52,14 @@ function extractBookingDetails(text: string) {
   return { targetDate, targetTime, title: title.charAt(0).toUpperCase() + title.slice(1) };
 }
 
-// --- ROTA PRINCIPAL ---
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get('content-type') || '';
-    let message = "";
-    let sender = "";
-    let mediaUrl = null;
+    let message = "", sender = "", mediaUrl = null;
 
     if (contentType.includes('application/json')) {
         const body = await req.json();
-        message = body.message;
-        sender = "teste_local";
+        message = body.message; sender = "teste_local";
     } else {
         const formData = await req.formData();
         message = formData.get('Body') as string;
@@ -79,13 +73,11 @@ export async function POST(req: Request) {
     const firstWord = cleanMessage.split(" ")[0].toLowerCase();
     let responseText = "";
     
-    // DATA BASE DO BRASIL PARA TUDO
+    // DATA BASE CORRIGIDA
     const todayBrazil = getBrazilDate();
     const dateKey = format(todayBrazil, "yyyy-MM-dd");
 
-    // ============================================================
     // 1. AGENDAR
-    // ============================================================
     if (firstWord === "agendar") {
       const { targetDate, targetTime, title } = extractBookingDetails(message);
       if (targetDate && targetTime && title) {
@@ -100,43 +92,31 @@ export async function POST(req: Request) {
       }
     }
 
-    // ============================================================
-    // 2. CHECK / FEITO (Atenção aqui!)
-    // ============================================================
+    // 2. CHECK / FEITO
     else if (firstWord === "check" || firstWord === "feito") {
       const habitName = message.substring(message.indexOf(" ") + 1).toLowerCase();
-      
       const { data: habits } = await supabase.from('nodes').select('*').eq('group', 'habit');
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(habitName));
 
       if (targetHabit) {
-        // O "_0" no final significa que marcamos a PRIMEIRA caixinha
-        const checkId = `check_${dateKey}_${targetHabit.id}_0`;
+        // ID usando HÍFEN (-0) para casar com a leitura do frontend
+        const checkId = `check_${dateKey}_${targetHabit.id}-0`; 
         
-        // Verifica se já não estava marcado para não duplicar
-        const { error } = await supabase.from('nodes').insert([{
+        await supabase.from('nodes').insert([{
             id: checkId,
-            label: `Check ${targetHabit.label}`, 
-            group: 'habit_check', 
-            due_date: dateKey, 
-            content: targetHabit.id
+            label: `Check ${targetHabit.label}`, group: 'habit_check', 
+            due_date: dateKey, content: targetHabit.id
         }]);
-
-        if (!error) {
-            responseText = `🔥 Hábito "${targetHabit.label}" marcado para hoje (${format(todayBrazil, 'dd/MM')})!`;
-        } else {
-            responseText = `⚠️ "${targetHabit.label}" já estava marcado ou deu erro.`;
-        }
+        responseText = `🔥 Hábito "${targetHabit.label}" marcado para hoje (${format(todayBrazil, 'dd/MM')})!`;
       } else {
         responseText = `❌ Hábito não encontrado.`;
       }
     }
 
-    // ============================================================
     // 3. STATUS
-    // ============================================================
     else if (firstWord === "status" || firstWord === "resumo") {
       const { data: hbs } = await supabase.from('nodes').select('id, label').eq('group', 'habit');
+      // Busca checks com o formato novo (hífen) ou antigo (underscore)
       const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', dateKey);
       const { data: apps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso').ilike('due_date', `${dateKey}%`);
       const { data: aChecks } = await supabase.from('nodes').select('content').eq('group', 'app_check');
@@ -153,65 +133,29 @@ export async function POST(req: Request) {
       }
     }
 
-    // ============================================================
     // 4. DIÁRIO
-    // ============================================================
     else if (["diário", "diario", "reflexão"].includes(firstWord)) {
         const content = message.substring(message.indexOf(" ") + 1);
-        
         const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', dateKey).maybeSingle();
-        
-        if (existing) {
-            await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
-        } else {
-            await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
-        }
+        if (existing) await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
+        else await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: dateKey, color: '#fff' }]);
         responseText = `📝 Salvo no diário de ${format(todayBrazil, 'dd/MM')}.`;
     }
 
-    // ============================================================
-    // 5. TÓPICOS (ANTIGO)
-    // ============================================================
+    // 5. TÓPICOS
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
         if (parts.length >= 2) {
-            const categoryName = parts[0];
-            const topicName = parts[1];
-            const contentText = parts[2] || "";
-
-            let { data: parentNode } = await supabase.from("nodes").select("id").eq("label", categoryName).maybeSingle();
-            if (!parentNode) {
-                const { data: newParent } = await supabase.from("nodes").insert([{ 
-                    id: categoryName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-                    label: categoryName, group: "category", color: "#ef4444"
-                }]).select().single();
-                parentNode = newParent;
-            }
-
-            const topicId = topicName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-            const { data: newNode } = await supabase.from("nodes").insert([{ 
-                id: topicId, label: topicName, group: "topic",
-                content: contentText, image_url: mediaUrl, color: "#6b7280"
-            }]).select().single();
-
-            if (parentNode && newNode) {
-                await supabase.from("links").insert([{ source: parentNode.id, target: newNode.id }]);
-            }
-            responseText = `🔗 Conexão criada: ${categoryName} > ${topicName}`;
+            const [cat, top, txt] = parts;
+            let { data: parent } = await supabase.from("nodes").select("id").eq("label", cat).maybeSingle();
+            if (!parent) { const { data: np } = await supabase.from("nodes").insert([{ id: `cat_${Date.now()}`, label: cat, group: "category", color: "#ef4444" }]).select().single(); parent = np; }
+            const { data: nn } = await supabase.from("nodes").insert([{ id: `node_${Date.now()}`, label: top, group: "topic", content: txt || "", image_url: mediaUrl, color: "#6b7280" }]).select().single();
+            if (parent && nn) await supabase.from("links").insert([{ source: parent.id, target: nn.id }]);
+            responseText = `🔗 Conexão criada: ${cat} > ${top}`;
         }
     }
 
-    // ============================================================
-    // ENVIO DA RESPOSTA
-    // ============================================================
-    if (responseText) {
-        await twilioClient.messages.create({
-            from: process.env.TWILIO_WHATSAPP_NUMBER,
-            to: sender,
-            body: responseText
-        });
-    }
-
+    if (responseText) await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_NUMBER, to: sender, body: responseText });
     return NextResponse.json({ status: "OK" });
 
   } catch (error: any) {

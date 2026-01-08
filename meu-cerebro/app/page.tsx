@@ -37,7 +37,7 @@ export default function Home() {
   const [selectedDayDetails, setSelectedDayDetails] = useState<{date: Date, apps: any[]} | null>(null);
   const [editingNote, setEditingNote] = useState("");
 
-  // --- CARREGAMENTO DE DADOS (AGORA COM CHECKS) ---
+  // --- CARREGAMENTO DE DADOS ---
   useEffect(() => {
     fetchData(); 
     const channel = supabase.channel("realtime-everything")
@@ -52,10 +52,10 @@ export default function Home() {
       const appNodes = nodesData.filter(n => n.group === 'compromisso');
       const habitNodes = nodesData.filter(n => n.group === 'habit');
       const logNodes = nodesData.filter(n => n.group === 'daily_log');
-      const checkNodes = nodesData.filter(n => n.group === 'habit_check'); // Carrega os checks do banco
-      const appCheckNodes = nodesData.filter(n => n.group === 'app_check'); // Carrega checks de compromisso
+      const checkNodes = nodesData.filter(n => n.group === 'habit_check'); 
+      const appCheckNodes = nodesData.filter(n => n.group === 'app_check'); 
 
-      // Dados do Neural (mantendo lógica anterior)
+      // Dados do Neural 
       const graphNodes = nodesData.filter(n => ['compromisso', 'daily_log', 'habit', 'habit_check', 'app_check'].indexOf(n.group) === -1);
       const { data: linksData } = await supabase.from('links').select('*');
       if(linksData) {
@@ -73,25 +73,29 @@ export default function Home() {
           try { return { id: h.id, ...JSON.parse(h.content || "{}") }; } catch(e) { return null; }
       }).filter(Boolean));
 
-      // Reconstrói o estado visual dos Checks de Hábito
+      // --- CORREÇÃO IMPORTANTE: LER FORMATO DO WHATSAPP ---
       const checksMap: Record<string, boolean> = {};
       checkNodes.forEach(c => {
           if(c.due_date && c.content) {
-             const suffix = c.id.replace(`check_${c.due_date}_`, ''); 
+             // Remove o prefixo padrão
+             let suffix = c.id.replace(`check_${c.due_date}_`, ''); 
+             
+             // TRUQUE: Se o ID vier do WhatsApp (ex: ID-0), mantém.
+             // Se vier do formato antigo (ex: ID_0), transforma em hífen para o visual funcionar.
+             suffix = suffix.replace(/_(\d+)$/, '-$1');
+
              const visualKey = `${c.due_date}-${suffix}`;
              checksMap[visualKey] = true;
           }
       });
       setCheckedHabits(checksMap);
 
-      // Reconstrói Checks de Compromisso
       const appChecksMap: Record<string, boolean> = {};
       appCheckNodes.forEach(c => {
           if(c.content) appChecksMap[c.content] = true; 
       });
       setCompletedApps(appChecksMap);
 
-      // Notas
       const notesMap: Record<string, string> = {};
       logNodes.forEach(log => {
           if (log.due_date) {
@@ -103,17 +107,19 @@ export default function Home() {
     }
   }
 
-  // --- FUNÇÕES DE TOGGLE COM PERSISTÊNCIA NO BANCO ---
+  // --- TOGGLE COM FORMATO NOVO ---
   const toggleHabitCheck = async (date: Date, habitId: string, colIndex: number) => {
     const dateKey = format(date, 'yyyy-MM-dd');
+    
+    // Chave Visual (usada pelo React)
     const visualKey = `${dateKey}-${habitId}-${colIndex}`;
     const isCheckedNow = !checkedHabits[visualKey]; 
 
-    // 1. Atualiza Visualmente (Rápido)
+    // 1. Atualiza Visualmente 
     setCheckedHabits(prev => ({ ...prev, [visualKey]: isCheckedNow }));
 
-    // 2. Atualiza no Banco
-    const dbId = `check_${dateKey}_${habitId}_${colIndex}`; 
+    // 2. Atualiza no Banco (USANDO HÍFEN PARA FICAR IGUAL AO WHATSAPP)
+    const dbId = `check_${dateKey}_${habitId}-${colIndex}`; 
     
     if (isCheckedNow) {
         await supabase.from('nodes').insert([{
@@ -125,22 +131,17 @@ export default function Home() {
         }]);
     } else {
         await supabase.from('nodes').delete().eq('id', dbId);
+        // Tenta apagar formato antigo também, para garantir
+        await supabase.from('nodes').delete().eq('id', `check_${dateKey}_${habitId}_${colIndex}`);
     }
   };
 
   const toggleAppCheck = async (appId: string) => {
     const isCheckedNow = !completedApps[appId];
-    
     setCompletedApps(prev => ({ ...prev, [appId]: isCheckedNow }));
-
     const dbId = `appdone_${appId}`;
     if (isCheckedNow) {
-        await supabase.from('nodes').insert([{
-            id: dbId,
-            label: 'App Done',
-            group: 'app_check',
-            content: appId 
-        }]);
+        await supabase.from('nodes').insert([{ id: dbId, label: 'App Done', group: 'app_check', content: appId }]);
     } else {
         await supabase.from('nodes').delete().eq('id', dbId);
     }
