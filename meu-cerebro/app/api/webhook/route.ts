@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { addDays, subDays, format, parseISO, isSameDay, subHours } from "date-fns";
 import twilio from "twilio";
 
-// --- CONFIGURAÇÕES ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -16,13 +15,16 @@ const twilioClient = twilio(
 
 const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; 
 
-// --- 🇧🇷 CORREÇÃO SIMPLES DE FUSO (SEM VOLTAR DIA) ---
-// Removemos a lógica de "madrugada". Agora é data calendário pura.
+// --- 🇧🇷 DATA COM LÓGICA DE "MADRUGADA" ---
 function getVirtualDate() {
   const now = new Date();
-  // Apenas subtrai 3 horas para cair no horário do Brasil
-  // Se for 00:01 no Brasil, já conta como o novo dia.
+  // Ajuste manual para Brasília (-3h)
   const brazilTime = new Date(now.getTime() - (3 * 60 * 60 * 1000));
+  
+  // Se for antes das 04:00 da manhã, conta como ontem
+  if (brazilTime.getHours() < 4) {
+      return subDays(brazilTime, 1);
+  }
   return brazilTime;
 }
 
@@ -33,7 +35,9 @@ function getRealBrazilDate() {
 }
 
 // --- CHECAGEM DE DATA ROBUSTA ---
+// Verifica se uma data ISO do banco cai no dia "target" considerando fuso BR
 function isSameDayBrazil(isoString: string, targetDate: Date) {
+    // Pega a data do banco (UTC) e subtrai 3 horas para ver que dia é no Brasil
     const dbDateUTC = parseISO(isoString);
     const dbDateBrazil = subHours(dbDateUTC, 3);
     return isSameDay(dbDateBrazil, targetDate);
@@ -71,7 +75,6 @@ function extractBookingDetails(text: string) {
   return { targetDate, targetTime, title };
 }
 
-// --- ROTA PRINCIPAL ---
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get('content-type') || '';
@@ -96,7 +99,6 @@ export async function POST(req: Request) {
     const firstWord = cleanMessage.split(" ")[0].toLowerCase();
     let responseText = "";
     
-    // Agora usa a data "reta", sem voltar 1 dia na madrugada
     const virtualDate = getVirtualDate();
     const virtualDateKey = format(virtualDate, "yyyy-MM-dd");
 
@@ -115,7 +117,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. CHECK (Hábito ou Compromisso)
+    // 2. CHECK
     else if (firstWord === "check" || firstWord === "feito") {
       const searchTerm = message.substring(message.indexOf(" ") + 1).toLowerCase();
       
@@ -129,11 +131,15 @@ export async function POST(req: Request) {
             due_date: virtualDateKey, content: targetHabit.id
         }]);
         if (!error) responseText = `🔥 Hábito "${targetHabit.label}" feito!`;
-        else responseText = `⚠️ Hábito "${targetHabit.label}" já estava feito hoje.`;
+        else responseText = `⚠️ Hábito "${targetHabit.label}" já estava feito.`;
       
       } else {
-        // Busca compromissos DE HOJE (Data Calendário)
-        const { data: apps } = await supabase.from('nodes').select('*').eq('group', 'compromisso');
+        // Busca TODOS compromissos (filtraremos no código para garantir fuso horário)
+        const { data: apps } = await supabase.from('nodes')
+            .select('*')
+            .eq('group', 'compromisso');
+            
+        // Filtra apenas os de hoje (Virtual)
         const todaysApps = apps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
         
         const targetApp = todaysApps.find(a => a.label.toLowerCase().includes(searchTerm));
@@ -152,13 +158,13 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. STATUS / RESUMO
+    // 3. STATUS (CORRIGIDO)
     else if (firstWord === "status" || firstWord === "resumo") {
       const { data: hbs } = await supabase.from('nodes').select('id, label').eq('group', 'habit');
       const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', virtualDateKey);
       
+      // Busca TODOS compromissos e filtra no JS para não perder os da noite
       const { data: allApps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso');
-      // Filtra compromissos de HOJE (Data Calendário)
       const todaysApps = allApps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
 
       const { data: aChecks } = await supabase.from('nodes').select('content').eq('group', 'app_check');
@@ -174,20 +180,20 @@ export async function POST(req: Request) {
           if (pendingH.length > 0) responseText += `⚠️ *Hábitos:*\n` + pendingH.map(h => `[ ] ${h.label}`).join("\n");
           if (pendingA.length > 0) {
               responseText += `\n📅 *Agenda:*\n` + pendingA.map(a => {
+                  // Ajusta hora visualmente para BR (-3)
                   const dateUTC = parseISO(a.due_date);
                   const dateBR = subHours(dateUTC, 3);
-                  return `[ ] ${a.label} (${format(dateBR, 'HH:mm')})`;
+                  const timeStr = format(dateBR, 'HH:mm');
+                  return `[ ] ${a.label} (${timeStr})`;
               }).join("\n");
           }
-          if (pendingA.length === 0 && pendingH.length > 0) responseText += `\n📅 Agenda Livre!`;
+          if (pendingA.length === 0 && pendingH.length > 0) responseText += `\n📅 Agenda Livre (ou tudo feito)!`;
       }
     }
 
-    // 4. DIÁRIO (Correção aplicada aqui também)
+    // 4. DIÁRIO
     else if (["diário", "diario", "reflexão"].includes(firstWord)) {
         const content = message.substring(message.indexOf(" ") + 1);
-        
-        // Agora busca/salva na data CALENDÁRIO exata
         const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', virtualDateKey).maybeSingle();
         
         if (existing) {
