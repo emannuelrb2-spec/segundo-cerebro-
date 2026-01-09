@@ -68,19 +68,33 @@ export default function Home() {
           try { return { id: h.id, ...JSON.parse(h.content || "{}") }; } catch(e) { return null; }
       }).filter(Boolean));
 
-      // --- LEITURA INTELIGENTE DE CHECKS (CORRIGIDO) ---
+    // ... dentro de fetchData, substitua o bloco antigo por este:
+
+      // --- LEITURA INTELIGENTE DE CHECKS (BLINDADA) ---
       const checksMap: Record<string, boolean> = {};
+      
       checkNodes.forEach(c => {
           if (c.due_date && c.content) {
+             // 1. Garante que a data é só a string YYYY-MM-DD (ignora hora se vier do banco)
+             const dateStr = c.due_date.substring(0, 10);
+             
              let colIndex = 0;
-             // Tenta extrair a coluna do final do ID (ex: ...-0, ..._2)
-             const parts = c.id.split(/[-_]/);
-             const lastPart = parts[parts.length - 1];
-             if (['0','1','2','3'].includes(lastPart)) {
-                colIndex = parseInt(lastPart);
+             
+             // 2. RegEx: Procura por um traço seguido de um dígito NO FINAL da string (ex: ...-0)
+             // Isso evita confundir com traços ou underlines no meio do ID do hábito
+             const match = c.id.match(/-(\d)$/);
+             
+             if (match) {
+                colIndex = parseInt(match[1]);
+             } else {
+                // Fallback: Se não achar o padrão novo, tenta o padrão antigo (separado por underline)
+                const parts = c.id.split('_');
+                const last = parts[parts.length - 1];
+                if(['0','1','2','3'].includes(last)) colIndex = parseInt(last);
              }
+
              // Chave visual: DATA - ID_HABITO - COLUNA
-             const visualKey = `${c.due_date}-${c.content}-${colIndex}`;
+             const visualKey = `${dateStr}-${c.content}-${colIndex}`;
              checksMap[visualKey] = true;
           }
       });
