@@ -252,14 +252,69 @@ export default function Home() {
     if (selectedDayDetails) { const updatedApps = selectedDayDetails.apps.filter(app => app.id !== id); setSelectedDayDetails({ ...selectedDayDetails, apps: updatedApps }); } fetchData();
   };
 
-  const handleSaveDailyNote = async () => {
-      if (!selectedDayDetails) return;
-      const dateKey = format(selectedDayDetails.date, 'yyyy-MM-dd');
-      const { data: existing } = await supabase.from('nodes').select('id').eq('group', 'daily_log').eq('due_date', dateKey).maybeSingle();
-      if (existing) await supabase.from('nodes').update({ content: editingNote }).eq('id', existing.id);
-      else await supabase.from('nodes').insert([{ id: `log_${dateKey}_${Date.now()}`, label: `Log ${dateKey}`, content: editingNote, group: 'daily_log', due_date: dateKey, color: '#ffffff' }]);
-      setDailyNotes(prev => ({ ...prev, [dateKey]: editingNote }));
-      alert("Frase salva com sucesso!");
+  const addNewNode = async () => {
+    // 1. Pega o nome
+    const n = prompt("Nome do Tópico (Novo ou Existente):");
+    if (!n) return;
+
+    const labelBusca = n.trim(); // Remove espaços extras
+
+    // 2. BUSCA NO INVENTÁRIO (Procura pelo LABEL/NOME visual)
+    // Usamos 'find' para ver se já existe algum nó com esse nome (ignorando maiúsculas/minúsculas)
+    const noExistente = data.nodes.find(node => 
+      node.label.toLowerCase() === labelBusca.toLowerCase()
+    );
+
+    if (noExistente) {
+      // CENÁRIO A: O nó JÁ EXISTE!
+      // Vamos apenas focar nele e conectar se necessário.
+      
+      // Se você tinha um nó selecionado antes (ex: "Pai"), vamos criar link com esse filho perdido
+      if (selectedNode && selectedNode.id !== noExistente.id) {
+         // Verifica se já não existe link para não duplicar linha
+         const linkJaExiste = data.links.some(l => 
+           (l.source.id === selectedNode.id && l.target.id === noExistente.id) ||
+           (l.source.id === noExistente.id && l.target.id === selectedNode.id)
+         );
+
+         if (!linkJaExiste) {
+            await supabase.from('links').insert([{ source: selectedNode.id, target: noExistente.id }]);
+            alert(`Conectei '${selectedNode.label}' ao tópico existente '${noExistente.label}'.`);
+         }
+      }
+
+      // AÇÃO VISUAL: Seleciona o nó antigo e dá Zoom nele
+      setSelectedNode(noExistente);
+      setNoteContent(noExistente.content || noExistente.notes || ""); // Carrega o texto dele na sidebar
+      
+      // Animação de câmera (Centraliza no nó)
+      if (graphRef.current) {
+        graphRef.current.centerAt(noExistente.x, noExistente.y, 1000);
+        graphRef.current.zoom(3, 2000);
+      }
+      
+      fetchData(); // Atualiza visual
+      return; // SAI DA FUNÇÃO AQUI. Não cria duplicata.
+    }
+
+    // CENÁRIO B: Não existe. Vamos criar do zero (CÓDIGO ORIGINAL MELHORADO)
+    
+    // Gera ID. Ainda uso Date.now() aqui para garantir unicidade técnica, 
+    // mas a trava acima impede nomes repetidos visuais.
+    const id = labelBusca.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_" + Date.now();
+
+    await supabase.from('nodes').insert([{ 
+      id, 
+      label: labelBusca, 
+      val: selectedNode ? 10 : 25, 
+      color: selectedNode ? "#9ca3af" : "#4b5563" 
+    }]);
+
+    if (selectedNode) {
+      await supabase.from('links').insert([{ source: selectedNode.id, target: id }]);
+    }
+    
+    fetchData();
   };
 
   const openDayDetails = (date: Date) => {
