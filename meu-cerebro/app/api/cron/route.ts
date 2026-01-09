@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { addDays, format, parseISO, differenceInMinutes } from "date-fns";
+import { addDays, format, parseISO, differenceInMinutes, subHours, isSameDay } from "date-fns";
 import twilio from "twilio";
 
 const supabase = createClient(
@@ -12,6 +12,13 @@ const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+// --- FUNÇÃO DE DATA SEGURA ---
+function isSameDayBrazil(isoString: string, targetDate: Date) {
+    const dbDateUTC = parseISO(isoString);
+    const dbDateBrazil = subHours(dbDateUTC, 3);
+    return isSameDay(dbDateBrazil, targetDate);
+}
 
 function getBrazilDate() {
   const now = new Date();
@@ -40,31 +47,27 @@ export async function GET(req: Request) {
     const todayKey = format(now, 'yyyy-MM-dd');
     const logs: string[] = [];
 
-    // ============================================================
-    // 1. ROTINA MATINAL (07:00) - HOJE
-    // ============================================================
+    // 1. ROTINA MATINAL (07:00)
     if (currentHour === 7 || forceMode) {
         const logId = `morning_msg_${todayKey}`;
         const { data: existing } = await supabase.from('nodes').select('id').eq('id', logId).maybeSingle();
 
         if (!existing || forceMode) {
-            // Pega Compromissos de HOJE
-            const { data: apps } = await supabase.from('nodes')
-                .select('label, due_date').eq('group', 'compromisso').ilike('due_date', `${todayKey}%`);
-            // Pega Hábitos
+            // Busca e filtra no código para garantir fuso horário
+            const { data: allApps } = await supabase.from('nodes').select('label, due_date').eq('group', 'compromisso');
+            const todaysApps = allApps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, now)) || [];
+
             const { data: habits } = await supabase.from('nodes').select('label').eq('group', 'habit');
 
             let msg = `☀️ *Bom dia! Foco para hoje (${format(now, 'dd/MM')}):*\n\n`;
-            
-            if (habits && habits.length > 0) {
-                msg += `💪 *Hábitos:*\n` + habits.map(h => `[ ] ${h.label}`).join("\n");
-            }
+            if (habits && habits.length > 0) msg += `💪 *Hábitos:*\n` + habits.map(h => `[ ] ${h.label}`).join("\n");
             msg += `\n\n`;
             
-            if (apps && apps.length > 0) {
-                msg += `📅 *Agenda:*\n` + apps.map(a => {
-                    const time = a.due_date.split('T')[1].substring(0,5);
-                    return `• ${time} - ${a.label}`;
+            if (todaysApps.length > 0) {
+                msg += `📅 *Agenda:*\n` + todaysApps.map(a => {
+                    const dateUTC = parseISO(a.due_date);
+                    const timeStr = format(subHours(dateUTC, 3), 'HH:mm');
+                    return `• ${timeStr} - ${a.label}`;
                 }).join("\n");
             } else {
                 msg += `📅 Agenda livre hoje!`;
@@ -76,41 +79,34 @@ export async function GET(req: Request) {
         }
     }
 
-    // ============================================================
     // 2. PRÉVIA DO DIA SEGUINTE (10:00 AM)
-    // ============================================================
-    // Você pediu para receber as 10h do dia anterior.
     if (currentHour === 10 || forceMode) {
         const logId = `preview_msg_${todayKey}`;
         const { data: existing } = await supabase.from('nodes').select('id').eq('id', logId).maybeSingle();
 
         if (!existing || forceMode) {
             const tomorrow = addDays(now, 1);
-            const tomorrowKey = format(tomorrow, 'yyyy-MM-dd');
             
-            const { data: apps } = await supabase.from('nodes')
-                .select('label, due_date').eq('group', 'compromisso').ilike('due_date', `${tomorrowKey}%`);
+            const { data: allApps } = await supabase.from('nodes').select('label, due_date').eq('group', 'compromisso');
+            const tomorrowApps = allApps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, tomorrow)) || [];
 
-            if (apps && apps.length > 0) {
+            if (tomorrowApps.length > 0) {
                 let msg = `🔮 *Agenda de Amanhã (${format(tomorrow, 'dd/MM')}):*\n\n`;
-                msg += apps.map(a => {
-                    const time = a.due_date.split('T')[1].substring(0,5);
-                    return `• ${time} - ${a.label}`;
+                msg += tomorrowApps.map(a => {
+                    const dateUTC = parseISO(a.due_date);
+                    const timeStr = format(subHours(dateUTC, 3), 'HH:mm');
+                    return `• ${timeStr} - ${a.label}`;
                 }).join("\n");
                 
                 await sendWhatsAppMessage(msg);
                 logs.push("Preview Amanhã enviada.");
             }
-            
             if (!forceMode) await supabase.from('nodes').insert([{ id: logId, label: 'Log Preview', group: 'system_log', due_date: todayKey }]);
         }
     }
 
-    // ============================================================
-    // 3. ALERTA DE 30 MINUTOS
-    // ============================================================
-    // Busca tudo que é futuro
-    const realNowUTC = new Date(); // Para calculo de diff usamos UTC real
+    // 3. ALERTA 30 MIN
+    const realNowUTC = new Date(); 
     const { data: futureApps } = await supabase.from('nodes')
         .select('*').eq('group', 'compromisso').gt('due_date', realNowUTC.toISOString());
 
@@ -119,7 +115,6 @@ export async function GET(req: Request) {
             const appTime = new Date(app.due_date);
             const diff = differenceInMinutes(appTime, realNowUTC);
 
-            // Janela de disparo: entre 25 e 35 minutos antes
             if (diff >= 25 && diff <= 35) {
                 const alertId = `alert_${app.id}`;
                 const { data: sent } = await supabase.from('nodes').select('id').eq('id', alertId).maybeSingle();
@@ -127,7 +122,6 @@ export async function GET(req: Request) {
                 if (!sent) {
                     await sendWhatsAppMessage(`🚨 *Lembrete:* "${app.label}" começa em 30 min!`);
                     logs.push(`Alerta enviado: ${app.label}`);
-                    // Marca que já avisou pra não floodar
                     await supabase.from('nodes').insert([{ id: alertId, label: 'Alert Log', group: 'system_log' }]);
                 }
             }
