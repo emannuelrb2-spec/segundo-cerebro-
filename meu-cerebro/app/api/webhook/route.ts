@@ -204,20 +204,77 @@ export async function POST(req: Request) {
         responseText = `📝 Salvo no diário de ${format(virtualDate, 'dd/MM')}.`;
     }
 
-    // 5. TÓPICOS
+    // 5. TÓPICOS (Lógica de "Adicionar ou Criar" - CORRIGIDO)
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
+        
         if (parts.length >= 2) {
-            const [cat, top, txt] = parts;
-            let { data: pNode } = await supabase.from("nodes").select("id").eq("label", cat).maybeSingle();
-            if (!pNode) { const { data: n } = await supabase.from("nodes").insert([{ id: cat.toLowerCase().replace(/[^a-z0-9]/g, '-'), label: cat, group: "category", color: "#ef4444" }]).select().single(); pNode = n; }
-            const tId = top.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-            const { data: nNode } = await supabase.from("nodes").insert([{ id: tId, label: top, group: "topic", content: txt || "", image_url: mediaUrl, color: "#6b7280" }]).select().single();
-            if (pNode && nNode) await supabase.from("links").insert([{ source: pNode.id, target: nNode.id }]);
-            responseText = `🔗 Salvo no Grafo: ${cat} > ${top}`;
+            const [cat, top, txt] = parts; // Ex: Design > Teoria > Estudar cores
+            
+            // --- Lógica do PAI (Categoria) ---
+            // Procura categoria existente pelo nome
+            let { data: pNode } = await supabase
+                .from("nodes")
+                .select("id")
+                .ilike("label", cat) // ilike ignora maiuscula/minuscula
+                .maybeSingle();
+
+            // Se não tem pai, cria
+            if (!pNode) { 
+                const newCatId = cat.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                const { data: n } = await supabase.from("nodes").insert([{ 
+                    id: newCatId, 
+                    label: cat, 
+                    group: "category", 
+                    color: "#ef4444" 
+                }]).select().single(); 
+                pNode = n; 
+            }
+
+            // --- Lógica do FILHO (Tópico) ---
+            // Verifica se já existe o tópico antes de criar!
+            let { data: existingTopic } = await supabase
+                .from("nodes")
+                .select("*")
+                .ilike("label", top)
+                .maybeSingle();
+
+            if (existingTopic) {
+                // CENÁRIO A: JÁ EXISTE -> Apenas atualiza o conteúdo
+                const novoConteudo = existingTopic.content 
+                    ? existingTopic.content + "\n" + (txt || "") 
+                    : (txt || "");
+
+                await supabase
+                    .from("nodes")
+                    .update({ content: novoConteudo })
+                    .eq("id", existingTopic.id);
+                    
+                responseText = `📝 Adicionado ao tópico existente: "${top}"`;
+
+            } else {
+                // CENÁRIO B: NÃO EXISTE -> Cria do zero
+                const tId = top.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+                
+                const { data: nNode } = await supabase.from("nodes").insert([{ 
+                    id: tId, 
+                    label: top, 
+                    group: "topic", 
+                    content: txt || "", 
+                    image_url: mediaUrl, 
+                    color: "#6b7280" 
+                }]).select().single();
+                
+                // Cria o link com o pai, já que é um filho novo
+                if (pNode && nNode) {
+                    await supabase.from("links").insert([{ source: pNode.id, target: nNode.id }]);
+                }
+                responseText = `🔗 Novo tópico criado: ${cat} > ${top}`;
+            }
         }
     }
 
+    // --- ENVIAR RESPOSTA PARA WHATSAPP ---
     if (responseText && sender !== "teste_local" && BOT_NUMBER) {
         await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
     }
