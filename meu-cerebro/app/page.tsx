@@ -264,13 +264,13 @@ export default function Home() {
 
   const handleLinkToggle = async (t: any) => { if (!selectedNode || t.id === selectedNode.id) return; const { data: e } = await supabase.from('links').select('*').or(`and(source.eq.${selectedNode.id},target.eq.${t.id}),and(source.eq.${t.id},target.eq.${selectedNode.id})`).maybeSingle(); if (e) await supabase.from('links').delete().match({ source: e.source, target: e.target }); else await supabase.from('links').insert([{ source: selectedNode.id, target: t.id }]); setIsLinkingMode(false); fetchData(); };
   
-  // --- FUNÇÃO CORRIGIDA E ÚNICA ---
+  // --- A FUNÇÃO INTELIGENTE (SEM DUPLICATA) ---
   const addNewNode = async () => {
     const n = prompt("Novo Nó (ou Existente):");
     if (!n) return;
 
     const labelBusca = n.trim();
-    // 1. Verifica se já existe
+    // 1. Scan: Já existe?
     const noExistente = data.nodes.find(node => 
       node.label.toLowerCase() === labelBusca.toLowerCase()
     );
