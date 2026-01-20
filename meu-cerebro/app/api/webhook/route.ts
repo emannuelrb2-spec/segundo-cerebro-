@@ -274,7 +274,7 @@ export async function POST(req: Request) {
         }
     }
 
-    // --- ENVIAR RESPOSTA PARA WHATSAPP ---
+  // --- ENVIAR RESPOSTA PARA WHATSAPP ---
     if (responseText && sender !== "teste_local" && BOT_NUMBER) {
         await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
     }
