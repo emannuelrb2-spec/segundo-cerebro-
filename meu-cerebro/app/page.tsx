@@ -1,3 +1,7 @@
+// FORÇANDO ATUALIZAÇÃO VERCEL - TESTE 01
+"use client";
+...
+
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
