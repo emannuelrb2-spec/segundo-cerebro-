@@ -1,7 +1,3 @@
-// FORÇANDO ATUALIZAÇÃO VERCEL - TESTE 01
-"use client";
-...
-
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -72,30 +68,23 @@ export default function Home() {
           try { return { id: h.id, ...JSON.parse(h.content || "{}") }; } catch(e) { return null; }
       }).filter(Boolean));
 
-      // --- LEITURA INTELIGENTE DE CHECKS (BLINDADA) ---
+      // --- LEITURA INTELIGENTE DE CHECKS ---
       const checksMap: Record<string, boolean> = {};
       
       checkNodes.forEach(c => {
           if (c.due_date && c.content) {
-             // 1. Garante que a data é só a string YYYY-MM-DD (ignora hora se vier do banco)
              const dateStr = c.due_date.substring(0, 10);
-             
              let colIndex = 0;
-             
-             // 2. RegEx: Procura por um traço seguido de um dígito NO FINAL da string (ex: ...-0)
-             // Isso evita confundir com traços ou underlines no meio do ID do hábito
              const match = c.id.match(/-(\d)$/);
              
              if (match) {
                 colIndex = parseInt(match[1]);
              } else {
-                // Fallback: Se não achar o padrão novo, tenta o padrão antigo (separado por underline)
                 const parts = c.id.split('_');
                 const last = parts[parts.length - 1];
                 if(['0','1','2','3'].includes(last)) colIndex = parseInt(last);
              }
 
-             // Chave visual: DATA - ID_HABITO - COLUNA
              const visualKey = `${dateStr}-${c.content}-${colIndex}`;
              checksMap[visualKey] = true;
           }
@@ -125,7 +114,6 @@ export default function Home() {
 
     setCheckedHabits(prev => ({ ...prev, [visualKey]: isCheckedNow }));
 
-    // Formato Hífen (igual ao WhatsApp)
     const dbId = `check_${dateKey}_${habitId}-${colIndex}`; 
     
     if (isCheckedNow) {
@@ -138,7 +126,6 @@ export default function Home() {
         }]);
     } else {
         await supabase.from('nodes').delete().eq('id', dbId);
-        // Fallback: Tenta deletar formato antigo
         await supabase.from('nodes').delete().eq('id', `check_${dateKey}_${habitId}_${colIndex}`);
     }
   };
@@ -277,19 +264,19 @@ export default function Home() {
 
   const handleLinkToggle = async (t: any) => { if (!selectedNode || t.id === selectedNode.id) return; const { data: e } = await supabase.from('links').select('*').or(`and(source.eq.${selectedNode.id},target.eq.${t.id}),and(source.eq.${t.id},target.eq.${selectedNode.id})`).maybeSingle(); if (e) await supabase.from('links').delete().match({ source: e.source, target: e.target }); else await supabase.from('links').insert([{ source: selectedNode.id, target: t.id }]); setIsLinkingMode(false); fetchData(); };
   
-  // --- AQUI ESTÁ A CORREÇÃO: Função addNewNode Inteligente ---
+  // --- FUNÇÃO CORRIGIDA E ÚNICA ---
   const addNewNode = async () => {
     const n = prompt("Novo Nó (ou Existente):");
     if (!n) return;
 
     const labelBusca = n.trim();
-    // Verifica se já existe um nó com esse nome (case insensitive)
+    // 1. Verifica se já existe
     const noExistente = data.nodes.find(node => 
       node.label.toLowerCase() === labelBusca.toLowerCase()
     );
 
     if (noExistente) {
-      // Se já existe, foca nele e conecta se necessário
+      // CENÁRIO A: JÁ EXISTE - Conecta e Foca
       if (selectedNode && selectedNode.id !== noExistente.id) {
          const linkJaExiste = data.links.some(l => 
            (l.source.id === selectedNode.id && l.target.id === noExistente.id) ||
@@ -298,10 +285,9 @@ export default function Home() {
 
          if (!linkJaExiste) {
             await supabase.from('links').insert([{ source: selectedNode.id, target: noExistente.id }]);
-            // alert(`Conectado a '${noExistente.label}'`);
          }
       }
-      // Ação visual: Seleciona e dá zoom
+      // Ação visual
       setSelectedNode(noExistente);
       setNoteContent(noExistente.content || noExistente.notes || "");
       if (graphRef.current) {
@@ -312,7 +298,7 @@ export default function Home() {
       return;
     }
 
-    // Se não existe, cria novo (com a lógica original de ID + data)
+    // CENÁRIO B: NOVO - Cria do zero
     const id = labelBusca.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_" + Date.now();
     await supabase.from('nodes').insert([{ 
         id, 
@@ -398,4 +384,4 @@ export default function Home() {
       {view === 'neural' && (<main style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#F3F4F6', overflow: 'hidden' }}>{expandedImage && (<div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setExpandedImage(null)}><button onClick={() => setExpandedImage(null)} style={{ position: 'absolute', top: '32px', right: '32px', background: 'transparent', border: 'none', color: 'white', cursor: 'pointer' }}><X size={48} /></button><img src={expandedImage} style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain', borderRadius: '8px' }} /></div>)}{isLinkingMode && <div style={{ position: 'absolute', top: '16px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#2563eb', color: 'white', padding: '8px 24px', borderRadius: '9999px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', zIndex: 50, display: 'flex', alignItems: 'center', gap: '8px' }}><LinkIcon size={16}/> Modo Conexão</div>}<div style={{ position: 'absolute', inset: 0 }}><ForceGraph2D ref={graphRef} graphData={data} nodeLabel="label" nodeColor={(node: any) => isLinkingMode ? "#3b82f6" : node.color} nodeRelSize={6} linkColor={() => "#d1d5db"} backgroundColor="#F3F4F6" onNodeClick={handleNodeClick} /></div>{!selectedNode && <button onClick={addNewNode} style={{ position: 'absolute', bottom: '32px', right: '32px', backgroundColor: 'black', color: 'white', padding: '16px', borderRadius: '9999px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', border: 'none' }}><Plus size={24} /> <span style={{ fontWeight: 'bold', paddingRight: '8px' }}>Nova Categoria</span></button>}{selectedNode && (<div style={{ position: 'absolute', left: winState.x, top: winState.y, width: winState.w, height: winState.h, backgroundColor: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', borderRadius: '12px', border: '1px solid #d1d5db', display: 'flex', flexDirection: 'column', zIndex: 50, overflow: 'hidden', color: 'black' }}><div onMouseDown={startMove} style={{ height: '48px', backgroundColor: '#f3f4f6', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px', cursor: 'move', userSelect: 'none' }}><div style={{ fontSize: '12px', fontWeight: 'bold', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'flex', alignItems: 'center', gap: '8px' }}><MousePointer2 size={14} /> {selectedNode.label || selectedNode.name}</div><button onClick={() => { setSelectedNode(null); setIsLinkingMode(false); }} style={{ padding: '4px', cursor: 'pointer', border: 'none', background: 'transparent' }}><X size={20} /></button></div><div style={{ flex: 1, padding: '24px', display: 'flex', flexDirection: 'column', minHeight: 0 }}><input type="text" value={selectedNode.label || selectedNode.name} onChange={(e) => {selectedNode.label = e.target.value; setData({...data})}} style={{ fontSize: '24px', fontWeight: 'bold', width: '100%', background: 'transparent', border: 'none', outline: 'none', marginBottom: '16px', color: '#1f2937', borderBottom: '1px solid transparent' }} /><textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} style={{ flex: 1, width: '100%', backgroundColor: 'rgba(249, 250, 251, 0.5)', padding: '16px', borderRadius: '8px', outline: 'none', color: '#374151', resize: 'none', lineHeight: '1.6', border: '1px solid #f3f4f6' }} placeholder="Escreva suas anotações aqui..." />{selectedNode.image_url && (<div style={{ marginTop: '16px', flexShrink: 0 }}><p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px', fontWeight: 'bold', textTransform: 'uppercase' }}>Anexo:</p><div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #e5e7eb', backgroundColor: '#f9fafb', maxHeight: '160px' }}><img src={selectedNode.image_url} style={{ width: '100%', objectFit: 'cover' }} /></div></div>)}{selectedNode.images && selectedNode.images.length > 0 && (<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '16px', flexShrink: 0 }}>{selectedNode.images.map((img: string, idx: number) => (<div key={idx} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '1px solid #f3f4f6', height: '100px', backgroundColor: '#f9fafb' }}><img src={img} onClick={() => setExpandedImage(img)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' }} title="Clique para expandir" /><button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img); }} style={{ position: 'absolute', top: '4px', right: '4px', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: '#dc2626', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }} title="Remover imagem"><Trash2 size={14} /></button></div>))}</div>)}</div><div style={{ padding: '8px', borderTop: '1px solid #f3f4f6', backgroundColor: '#f9fafb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '4px' }}><div style={{ display: 'flex', gap: '4px' }}><button onClick={triggerColorPicker} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer' }}><Palette size={16} /></button><input ref={colorInputRef} type="color" onChange={handleColorChange} style={{ display: 'none' }} /><button id="save-btn" onClick={handleSave} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer' }}><Save size={16} /></button><button onClick={addNewNode} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer' }}><Plus size={16} /></button><button onClick={() => setIsLinkingMode(true)} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer', backgroundColor: isLinkingMode ? '#2563eb' : 'transparent', color: isLinkingMode ? 'white' : 'black' }}><LinkIcon size={16} /></button><button onClick={deleteNode} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer', color: '#dc2626' }}><Trash2 size={16} /></button><label style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer', color: '#2563eb' }} title="Adicionar Imagem"><ImageIcon size={16} /><input type="file" style={{ display: 'none' }} accept="image/*" onChange={handleImageUpload} /></label></div><div onMouseDown={startResize} style={{ cursor: 'nwse-resize', padding: '8px', color: '#9ca3af' }}><Maximize2 size={16} /></div></div></div>)}</main>)}
     </div>
   );
-} // kdmadmS
+}

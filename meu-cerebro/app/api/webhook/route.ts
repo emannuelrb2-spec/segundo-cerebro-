@@ -3,11 +3,13 @@ import { NextResponse } from "next/server";
 import { addDays, subDays, format, parseISO, isSameDay, subHours } from "date-fns";
 import twilio from "twilio";
 
+// Configuração do Supabase
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+// Configuração do Twilio
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -15,29 +17,26 @@ const twilioClient = twilio(
 
 const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; 
 
-// --- 🇧🇷 DATA COM LÓGICA DE "MADRUGADA" ---
+// --- FUNÇÕES DE DATA (Fuso Horário Brasil) ---
+
 function getVirtualDate() {
   const now = new Date();
   // Ajuste manual para Brasília (-3h)
   const brazilTime = new Date(now.getTime() - (3 * 60 * 60 * 1000));
   
-  // Se for antes das 04:00 da manhã, conta como ontem
+  // Se for antes das 04:00 da manhã, conta como "ontem" (madrugada produtiva)
   if (brazilTime.getHours() < 4) {
       return subDays(brazilTime, 1);
   }
   return brazilTime;
 }
 
-// Data real (para agendar no futuro)
 function getRealBrazilDate() {
     const now = new Date();
     return new Date(now.getTime() - (3 * 60 * 60 * 1000));
 }
 
-// --- CHECAGEM DE DATA ROBUSTA ---
-// Verifica se uma data ISO do banco cai no dia "target" considerando fuso BR
 function isSameDayBrazil(isoString: string, targetDate: Date) {
-    // Pega a data do banco (UTC) e subtrai 3 horas para ver que dia é no Brasil
     const dbDateUTC = parseISO(isoString);
     const dbDateBrazil = subHours(dbDateUTC, 3);
     return isSameDay(dbDateBrazil, targetDate);
@@ -49,6 +48,7 @@ function extractBookingDetails(text: string) {
   let targetDate = today;
   let targetTime = "";
   
+  // Detecta "amanhã" ou data específica
   if (cleanText.includes("amanhã") || cleanText.includes("amanha")) {
     targetDate = addDays(today, 1);
     cleanText = cleanText.replace("amanhã", "").replace("amanha", "");
@@ -64,17 +64,20 @@ function extractBookingDetails(text: string) {
     }
   }
 
+  // Detecta horário
   const timeMatch = cleanText.match(/(\d{1,2})(?:h|:)(\d{2})?/);
   if (timeMatch) {
     targetTime = `${timeMatch[1].padStart(2, '0')}:${timeMatch[2] || "00"}`;
     cleanText = cleanText.replace(timeMatch[0], "");
   }
 
+  // Limpa o texto para pegar o título
   let title = cleanText.replace("agendar", "").replace(/\s(às|as|para|o|a)\s/g, " ").replace(/\s+/g, " ").trim();
   title = title.charAt(0).toUpperCase() + title.slice(1);
   return { targetDate, targetTime, title };
 }
 
+// --- API ROUTE (POST) ---
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get('content-type') || '';
@@ -82,6 +85,7 @@ export async function POST(req: Request) {
     let sender = "";
     let mediaUrl = null;
 
+    // Processa JSON (Teste local) ou FormData (WhatsApp Real)
     if (contentType.includes('application/json')) {
         const body = await req.json();
         message = body.message;
@@ -117,10 +121,11 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. CHECK
+    // 2. CHECK / FEITO
     else if (firstWord === "check" || firstWord === "feito") {
       const searchTerm = message.substring(message.indexOf(" ") + 1).toLowerCase();
       
+      // Procura em Hábitos
       const { data: habits } = await supabase.from('nodes').select('*').eq('group', 'habit');
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(searchTerm));
 
@@ -134,14 +139,9 @@ export async function POST(req: Request) {
         else responseText = `⚠️ Hábito "${targetHabit.label}" já estava feito.`;
       
       } else {
-        // Busca TODOS compromissos (filtraremos no código para garantir fuso horário)
-        const { data: apps } = await supabase.from('nodes')
-            .select('*')
-            .eq('group', 'compromisso');
-            
-        // Filtra apenas os de hoje (Virtual)
+        // Procura em Compromissos
+        const { data: apps } = await supabase.from('nodes').select('*').eq('group', 'compromisso');
         const todaysApps = apps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
-        
         const targetApp = todaysApps.find(a => a.label.toLowerCase().includes(searchTerm));
 
         if (targetApp) {
@@ -158,12 +158,11 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. STATUS (CORRIGIDO)
+    // 3. STATUS / RESUMO
     else if (firstWord === "status" || firstWord === "resumo") {
       const { data: hbs } = await supabase.from('nodes').select('id, label').eq('group', 'habit');
       const { data: hChecks } = await supabase.from('nodes').select('content').eq('group', 'habit_check').eq('due_date', virtualDateKey);
       
-      // Busca TODOS compromissos e filtra no JS para não perder os da noite
       const { data: allApps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso');
       const todaysApps = allApps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
 
@@ -180,14 +179,12 @@ export async function POST(req: Request) {
           if (pendingH.length > 0) responseText += `⚠️ *Hábitos:*\n` + pendingH.map(h => `[ ] ${h.label}`).join("\n");
           if (pendingA.length > 0) {
               responseText += `\n📅 *Agenda:*\n` + pendingA.map(a => {
-                  // Ajusta hora visualmente para BR (-3)
                   const dateUTC = parseISO(a.due_date);
                   const dateBR = subHours(dateUTC, 3);
                   const timeStr = format(dateBR, 'HH:mm');
                   return `[ ] ${a.label} (${timeStr})`;
               }).join("\n");
           }
-          if (pendingA.length === 0 && pendingH.length > 0) responseText += `\n📅 Agenda Livre (ou tudo feito)!`;
       }
     }
 
@@ -204,35 +201,29 @@ export async function POST(req: Request) {
         responseText = `📝 Salvo no diário de ${format(virtualDate, 'dd/MM')}.`;
     }
 
-    // 5. TÓPICOS (Lógica de "Adicionar ou Criar" - CORRIGIDO)
+    // 5. TÓPICOS (GRÁFICO NEURAL)
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
         
         if (parts.length >= 2) {
-            const [cat, top, txt] = parts; // Ex: Design > Teoria > Estudar cores
+            const [cat, top, txt] = parts; 
             
-            // --- Lógica do PAI (Categoria) ---
-            // Procura categoria existente pelo nome
+            // A) Lógica da Categoria (Pai)
             let { data: pNode } = await supabase
                 .from("nodes")
                 .select("id")
-                .ilike("label", cat) // ilike ignora maiuscula/minuscula
+                .ilike("label", cat)
                 .maybeSingle();
 
-            // Se não tem pai, cria
             if (!pNode) { 
                 const newCatId = cat.toLowerCase().replace(/[^a-z0-9]/g, '-');
                 const { data: n } = await supabase.from("nodes").insert([{ 
-                    id: newCatId, 
-                    label: cat, 
-                    group: "category", 
-                    color: "#ef4444" 
+                    id: newCatId, label: cat, group: "category", color: "#ef4444" 
                 }]).select().single(); 
                 pNode = n; 
             }
 
-            // --- Lógica do FILHO (Tópico) ---
-            // Verifica se já existe o tópico antes de criar!
+            // B) Lógica do Tópico (Filho) - UPSERT (Adicionar ou Criar)
             let { data: existingTopic } = await supabase
                 .from("nodes")
                 .select("*")
@@ -240,7 +231,7 @@ export async function POST(req: Request) {
                 .maybeSingle();
 
             if (existingTopic) {
-                // CENÁRIO A: JÁ EXISTE -> Apenas atualiza o conteúdo
+                // Se JÁ EXISTE: Adiciona o texto novo ao antigo
                 const novoConteudo = existingTopic.content 
                     ? existingTopic.content + "\n" + (txt || "") 
                     : (txt || "");
@@ -250,22 +241,16 @@ export async function POST(req: Request) {
                     .update({ content: novoConteudo })
                     .eq("id", existingTopic.id);
                     
-                responseText = `📝 Adicionado ao tópico existente: "${top}"`;
+                responseText = `📝 Tópico "${top}" atualizado com nova nota.`;
 
             } else {
-                // CENÁRIO B: NÃO EXISTE -> Cria do zero
+                // Se NÃO EXISTE: Cria novo
                 const tId = top.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-                
                 const { data: nNode } = await supabase.from("nodes").insert([{ 
-                    id: tId, 
-                    label: top, 
-                    group: "topic", 
-                    content: txt || "", 
-                    image_url: mediaUrl, 
-                    color: "#6b7280" 
+                    id: tId, label: top, group: "topic", 
+                    content: txt || "", image_url: mediaUrl, color: "#6b7280" 
                 }]).select().single();
                 
-                // Cria o link com o pai, já que é um filho novo
                 if (pNode && nNode) {
                     await supabase.from("links").insert([{ source: pNode.id, target: nNode.id }]);
                 }
@@ -274,7 +259,7 @@ export async function POST(req: Request) {
         }
     }
 
-  // --- ENVIAR RESPOSTA PARA WHATSAPP ---
+    // --- ENVIAR RESPOSTA PARA WHATSAPP ---
     if (responseText && sender !== "teste_local" && BOT_NUMBER) {
         await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
     }
