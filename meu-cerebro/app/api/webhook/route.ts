@@ -18,11 +18,14 @@ const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 
 // --- FUNÇÕES AUXILIARES ---
 
+// Função para gerar ID único (O Crachá que faltava!)
+function generateId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
+}
+
 function getVirtualDate() {
   const now = new Date();
-  // Ajuste para Brasília (-3h)
   const brazilTime = new Date(now.getTime() - (3 * 60 * 60 * 1000));
-  // Se for antes das 04:00 da manhã, conta como "ontem"
   if (brazilTime.getHours() < 4) {
       return subDays(brazilTime, 1);
   }
@@ -76,7 +79,7 @@ function extractBookingDetails(text: string) {
 // --- API PRINCIPAL ---
 
 export async function POST(req: Request) {
-  let sender = ""; // Declarar fora para usar no catch
+  let sender = ""; 
   
   try {
     const contentType = req.headers.get('content-type') || '';
@@ -109,12 +112,12 @@ export async function POST(req: Request) {
       if (targetDate && targetTime && title) {
         const dateStr = format(targetDate, "yyyy-MM-dd");
         
-        // Adicionei x, y e type para garantir que aparece no gráfico
         await supabase.from('nodes').insert([{
+          id: generateId(), // <--- AQUI ESTÁ A CORREÇÃO
           label: title, 
           due_date: `${dateStr}T${targetTime}:00`,
           group: 'compromisso',
-          type: 'compromisso', // Importante para o frontend
+          type: 'compromisso',
           color: '#000000',
           x: Math.random() * 100, 
           y: Math.random() * 100
@@ -134,6 +137,7 @@ export async function POST(req: Request) {
 
       if (targetHabit) {
         const { error } = await supabase.from('nodes').insert([{
+            id: generateId(), // <--- CORREÇÃO
             label: `Check ${targetHabit.label}`, 
             group: 'habit_check', 
             type: 'habit_check',
@@ -142,7 +146,7 @@ export async function POST(req: Request) {
             x: 0, y: 0
         }]);
         if (!error) responseText = `🔥 Hábito "${targetHabit.label}" feito!`;
-        else responseText = `⚠️ Erro ou já feito: ${error.message}`;
+        else responseText = `⚠️ Erro: ${error.message}`;
       
       } else {
         const { data: apps } = await supabase.from('nodes').select('*').eq('group', 'compromisso');
@@ -151,6 +155,7 @@ export async function POST(req: Request) {
 
         if (targetApp) {
             const { error } = await supabase.from('nodes').insert([{ 
+                id: generateId(), // <--- CORREÇÃO
                 label: 'App Done', 
                 group: 'app_check',
                 type: 'app_check', 
@@ -203,6 +208,7 @@ export async function POST(req: Request) {
             await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
         } else {
             await supabase.from('nodes').insert([{ 
+                id: generateId(), // <--- CORREÇÃO
                 label: `Log`, content, 
                 group: 'daily_log', type: 'daily_log',
                 due_date: virtualDateKey, 
@@ -213,7 +219,7 @@ export async function POST(req: Request) {
     }
 
     // =========================================================================
-    // 5. TÓPICOS (GRÁFICO NEURAL) - ARREMESSANDO ERROS PARA DEBUG
+    // 5. TÓPICOS (GRÁFICO NEURAL)
     // =========================================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
@@ -236,6 +242,7 @@ export async function POST(req: Request) {
                 const { data: newCategory, error: errCat } = await supabase
                     .from("nodes")
                     .insert([{ 
+                        id: generateId(), // <--- CORREÇÃO
                         label: catName, group: "category", type: "category",
                         color: "#ef4444", x: Math.random()*100, y: Math.random()*100
                     }])
@@ -263,7 +270,7 @@ export async function POST(req: Request) {
                     
                     responseText = `📝 Tópico "${topicName}" atualizado.`;
 
-                    // Garantir conexão (Tenta 'edges', se falhar tenta 'links')
+                    // Garantir conexão
                     const { error: errEdge } = await supabase.from('edges').insert({ source: parentId, target: existingTopic.id });
                     if (errEdge) await supabase.from('links').insert({ source: parentId, target: existingTopic.id });
 
@@ -272,6 +279,7 @@ export async function POST(req: Request) {
                     const { data: newTopic, error: errNew } = await supabase
                         .from("nodes")
                         .insert([{ 
+                            id: generateId(), // <--- CORREÇÃO
                             label: topicName, group: "topic", type: "topic",
                             content: extraText || "", image_url: mediaUrl, 
                             color: "#6b7280", 
@@ -283,11 +291,11 @@ export async function POST(req: Request) {
                     if (errNew) throw new Error(`Erro Tópico: ${errNew.message}`);
                     
                     if (newTopic) {
-                        // Tenta conectar (Edges vs Links)
+                        // Tenta conectar
                         const { error: errConn } = await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
                         if (errConn) {
                             const { error: errConn2 } = await supabase.from("links").insert([{ source: parentId, target: newTopic.id }]);
-                            if (errConn2) throw new Error(`Erro Conexão (Tabela edges/links): ${errConn.message}`);
+                            if (errConn2) throw new Error(`Erro Conexão: ${errConn.message}`);
                         }
                         responseText = `🔗 Novo tópico: ${catName} > ${topicName}`;
                     }
@@ -305,8 +313,6 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("Erro Crítico:", error);
-    
-    // 🔥 O SEGREDO: Manda o erro pro WhatsApp se der zebra
     if (sender && sender !== "teste_local" && BOT_NUMBER) {
          try {
             await twilioClient.messages.create({ 
@@ -316,7 +322,6 @@ export async function POST(req: Request) {
             });
          } catch (e) { console.error("Falha ao enviar erro", e); }
     }
-
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-} // jfjff
+}
