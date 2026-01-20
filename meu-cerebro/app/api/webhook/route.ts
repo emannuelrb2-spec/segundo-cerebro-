@@ -112,8 +112,11 @@ export async function POST(req: Request) {
       if (targetDate && targetTime && title) {
         const dateStr = format(targetDate, "yyyy-MM-dd");
         await supabase.from('nodes').insert([{
-          id: Date.now().toString(), label: title, due_date: `${dateStr}T${targetTime}:00`,
-          group: 'compromisso', color: '#000000'
+          label: title, // Removido ID manual para deixar o banco gerar UUID ou int
+          due_date: `${dateStr}T${targetTime}:00`,
+          group: 'compromisso', 
+          color: '#000000',
+          x: Math.random() * 100, y: Math.random() * 100
         }]);
         responseText = `✅ Agendado: "${title}"\n📅 ${format(targetDate, "dd/MM")} às ${targetTime}`;
       } else {
@@ -125,29 +128,28 @@ export async function POST(req: Request) {
     else if (firstWord === "check" || firstWord === "feito") {
       const searchTerm = message.substring(message.indexOf(" ") + 1).toLowerCase();
       
-      // Procura em Hábitos
       const { data: habits } = await supabase.from('nodes').select('*').eq('group', 'habit');
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(searchTerm));
 
       if (targetHabit) {
-        const checkId = `check_${virtualDateKey}_${targetHabit.id}-0`; 
+        const checkId = `check_${virtualDateKey}_${targetHabit.id}`; 
         const { error } = await supabase.from('nodes').insert([{
-            id: checkId, label: `Check ${targetHabit.label}`, group: 'habit_check', 
-            due_date: virtualDateKey, content: targetHabit.id
+            label: `Check ${targetHabit.label}`, group: 'habit_check', 
+            due_date: virtualDateKey, content: targetHabit.id,
+            x: 0, y: 0
         }]);
         if (!error) responseText = `🔥 Hábito "${targetHabit.label}" feito!`;
         else responseText = `⚠️ Hábito "${targetHabit.label}" já estava feito.`;
       
       } else {
-        // Procura em Compromissos
         const { data: apps } = await supabase.from('nodes').select('*').eq('group', 'compromisso');
         const todaysApps = apps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
         const targetApp = todaysApps.find(a => a.label.toLowerCase().includes(searchTerm));
 
         if (targetApp) {
-            const dbId = `appdone_${targetApp.id}`;
             const { error } = await supabase.from('nodes').insert([{ 
-                id: dbId, label: 'App Done', group: 'app_check', content: targetApp.id 
+                label: 'App Done', group: 'app_check', content: targetApp.id,
+                x: 0, y: 0
             }]);
             
             if(!error) responseText = `✅ Compromisso "${targetApp.label}" concluído!`;
@@ -196,65 +198,105 @@ export async function POST(req: Request) {
         if (existing) {
             await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
         } else {
-            await supabase.from('nodes').insert([{ id: `log_${Date.now()}`, label: `Log`, content, group: 'daily_log', due_date: virtualDateKey, color: '#fff' }]);
+            await supabase.from('nodes').insert([{ label: `Log`, content, group: 'daily_log', due_date: virtualDateKey, color: '#fff', x:0, y:0 }]);
         }
         responseText = `📝 Salvo no diário de ${format(virtualDate, 'dd/MM')}.`;
     }
 
-    // 5. TÓPICOS (GRÁFICO NEURAL)
+    // =========================================================================
+    // 5. TÓPICOS (GRÁFICO NEURAL) - CORRIGIDO PARA EVITAR DUPLICIDADE
+    // =========================================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
         
         if (parts.length >= 2) {
-            const [cat, top, txt] = parts; 
+            const [catName, topicName, extraText] = parts; 
             
-            // A) Lógica da Categoria (Pai)
-            let { data: pNode } = await supabase
+            // --- PASSO A: Resolver a Categoria (Pai) ---
+            let parentId = null;
+
+            // 1. Procura se JÁ EXISTE categoria com esse nome
+            const { data: existingCategory } = await supabase
                 .from("nodes")
                 .select("id")
-                .ilike("label", cat)
+                .ilike("label", catName) // Case Insensitive ('Dia a dia' == 'dia a dia')
+                .eq("group", "category")
                 .maybeSingle();
 
-            if (!pNode) { 
-                const newCatId = cat.toLowerCase().replace(/[^a-z0-9]/g, '-');
-                const { data: n } = await supabase.from("nodes").insert([{ 
-                    id: newCatId, label: cat, group: "category", color: "#ef4444" 
-                }]).select().single(); 
-                pNode = n; 
+            if (existingCategory) {
+                // ACHEI! Uso o ID dela.
+                parentId = existingCategory.id;
+            } else {
+                // NÃO ACHEI! Crio uma nova.
+                const { data: newCategory } = await supabase
+                    .from("nodes")
+                    .insert([{ 
+                        label: catName, 
+                        group: "category", 
+                        type: "category",
+                        color: "#ef4444",
+                        x: 0, y: 0
+                    }])
+                    .select()
+                    .single();
+                
+                if (newCategory) parentId = newCategory.id;
             }
 
-            // B) Lógica do Tópico (Filho) - UPSERT (Adicionar ou Criar)
-            let { data: existingTopic } = await supabase
-                .from("nodes")
-                .select("*")
-                .ilike("label", top)
-                .maybeSingle();
-
-            if (existingTopic) {
-                // Se JÁ EXISTE: Adiciona o texto novo ao antigo
-                const novoConteudo = existingTopic.content 
-                    ? existingTopic.content + "\n" + (txt || "") 
-                    : (txt || "");
-
-                await supabase
+            // --- PASSO B: Resolver o Tópico (Filho) ---
+            if (parentId && topicName) {
+                // 1. Procura se JÁ EXISTE tópico com esse nome
+                const { data: existingTopic } = await supabase
                     .from("nodes")
-                    .update({ content: novoConteudo })
-                    .eq("id", existingTopic.id);
-                    
-                responseText = `📝 Tópico "${top}" atualizado com nova nota.`;
+                    .select("*")
+                    .ilike("label", topicName)
+                    .not("group", "eq", "category") // Garante que não pega a categoria por engano
+                    .maybeSingle();
 
-            } else {
-                // Se NÃO EXISTE: Cria novo
-                const tId = top.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-                const { data: nNode } = await supabase.from("nodes").insert([{ 
-                    id: tId, label: top, group: "topic", 
-                    content: txt || "", image_url: mediaUrl, color: "#6b7280" 
-                }]).select().single();
-                
-                if (pNode && nNode) {
-                    await supabase.from("links").insert([{ source: pNode.id, target: nNode.id }]);
+                if (existingTopic) {
+                    // CENÁRIO: JÁ EXISTE -> ATUALIZAR (Não criar bola nova)
+                    // Adiciona o novo texto ao texto antigo
+                    const novoConteudo = existingTopic.content 
+                        ? existingTopic.content + "\n" + (extraText || "") 
+                        : (extraText || "");
+
+                    await supabase
+                        .from("nodes")
+                        .update({ content: novoConteudo })
+                        .eq("id", existingTopic.id);
+                        
+                    responseText = `📝 Tópico "${topicName}" atualizado (Informação adicionada à bolinha existente).`;
+
+                    // Garante que a conexão existe (caso o tópico existisse mas estivesse solto)
+                    // Se sua tabela de conexões chamar 'links', troque 'edges' por 'links' abaixo
+                    const { data: linkCheck } = await supabase.from('edges').select('*').eq('source', parentId).eq('target', existingTopic.id);
+                    if (!linkCheck || linkCheck.length === 0) {
+                         await supabase.from('edges').insert({ source: parentId, target: existingTopic.id });
+                    }
+
+                } else {
+                    // CENÁRIO: NÃO EXISTE -> CRIAR NOVA BOLA
+                    const { data: newTopic } = await supabase
+                        .from("nodes")
+                        .insert([{ 
+                            label: topicName, 
+                            group: "topic", 
+                            content: extraText || "", 
+                            image_url: mediaUrl, 
+                            color: "#6b7280",
+                            x: Math.random() * 100,
+                            y: Math.random() * 100
+                        }])
+                        .select()
+                        .single();
+                    
+                    if (newTopic) {
+                        // Cria a conexão
+                        // Se sua tabela chamar 'links', mude aqui para 'links'
+                        await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
+                        responseText = `🔗 Novo tópico criado: ${catName} > ${topicName}`;
+                    }
                 }
-                responseText = `🔗 Novo tópico criado: ${cat} > ${top}`;
             }
         }
     }
