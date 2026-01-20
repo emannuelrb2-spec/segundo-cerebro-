@@ -6,7 +6,7 @@ import twilio from "twilio";
 
 // --- CONFIGURAÇÃO ---
 // ⚠️ COLOQUE SEU NÚMERO AQUI (Ex: whatsapp:+5561999999999)
-const MEU_NUMERO = "whatsapp:+5561998825063"; 
+const MEU_NUMERO = "whatsapp:+556198825063"; 
 // --------------------
 
 const supabase = createClient(
