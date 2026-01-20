@@ -3,13 +3,12 @@ import { NextResponse } from "next/server";
 import { addDays, subDays, format, parseISO, isSameDay, subHours } from "date-fns";
 import twilio from "twilio";
 
-// Configuração do Supabase
+// --- CONFIGURAÇÃO ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// Configuração do Twilio
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -17,14 +16,13 @@ const twilioClient = twilio(
 
 const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; 
 
-// --- FUNÇÕES DE DATA (Fuso Horário Brasil) ---
+// --- FUNÇÕES AUXILIARES ---
 
 function getVirtualDate() {
   const now = new Date();
-  // Ajuste manual para Brasília (-3h)
+  // Ajuste para Brasília (-3h)
   const brazilTime = new Date(now.getTime() - (3 * 60 * 60 * 1000));
-  
-  // Se for antes das 04:00 da manhã, conta como "ontem" (madrugada produtiva)
+  // Se for antes das 04:00 da manhã, conta como "ontem"
   if (brazilTime.getHours() < 4) {
       return subDays(brazilTime, 1);
   }
@@ -37,6 +35,7 @@ function getRealBrazilDate() {
 }
 
 function isSameDayBrazil(isoString: string, targetDate: Date) {
+    if (!isoString) return false;
     const dbDateUTC = parseISO(isoString);
     const dbDateBrazil = subHours(dbDateUTC, 3);
     return isSameDay(dbDateBrazil, targetDate);
@@ -48,7 +47,6 @@ function extractBookingDetails(text: string) {
   let targetDate = today;
   let targetTime = "";
   
-  // Detecta "amanhã" ou data específica
   if (cleanText.includes("amanhã") || cleanText.includes("amanha")) {
     targetDate = addDays(today, 1);
     cleanText = cleanText.replace("amanhã", "").replace("amanha", "");
@@ -64,28 +62,27 @@ function extractBookingDetails(text: string) {
     }
   }
 
-  // Detecta horário
   const timeMatch = cleanText.match(/(\d{1,2})(?:h|:)(\d{2})?/);
   if (timeMatch) {
     targetTime = `${timeMatch[1].padStart(2, '0')}:${timeMatch[2] || "00"}`;
     cleanText = cleanText.replace(timeMatch[0], "");
   }
 
-  // Limpa o texto para pegar o título
   let title = cleanText.replace("agendar", "").replace(/\s(às|as|para|o|a)\s/g, " ").replace(/\s+/g, " ").trim();
   title = title.charAt(0).toUpperCase() + title.slice(1);
   return { targetDate, targetTime, title };
 }
 
-// --- API ROUTE (POST) ---
+// --- API PRINCIPAL ---
+
 export async function POST(req: Request) {
+  let sender = ""; // Declarar fora para usar no catch
+  
   try {
     const contentType = req.headers.get('content-type') || '';
     let message = "";
-    let sender = "";
     let mediaUrl = null;
 
-    // Processa JSON (Teste local) ou FormData (WhatsApp Real)
     if (contentType.includes('application/json')) {
         const body = await req.json();
         message = body.message;
@@ -111,12 +108,16 @@ export async function POST(req: Request) {
       const { targetDate, targetTime, title } = extractBookingDetails(message);
       if (targetDate && targetTime && title) {
         const dateStr = format(targetDate, "yyyy-MM-dd");
+        
+        // Adicionei x, y e type para garantir que aparece no gráfico
         await supabase.from('nodes').insert([{
-          label: title, // Removido ID manual para deixar o banco gerar UUID ou int
+          label: title, 
           due_date: `${dateStr}T${targetTime}:00`,
-          group: 'compromisso', 
+          group: 'compromisso',
+          type: 'compromisso', // Importante para o frontend
           color: '#000000',
-          x: Math.random() * 100, y: Math.random() * 100
+          x: Math.random() * 100, 
+          y: Math.random() * 100
         }]);
         responseText = `✅ Agendado: "${title}"\n📅 ${format(targetDate, "dd/MM")} às ${targetTime}`;
       } else {
@@ -132,14 +133,16 @@ export async function POST(req: Request) {
       const targetHabit = habits?.find(h => h.label.toLowerCase().includes(searchTerm));
 
       if (targetHabit) {
-        const checkId = `check_${virtualDateKey}_${targetHabit.id}`; 
         const { error } = await supabase.from('nodes').insert([{
-            label: `Check ${targetHabit.label}`, group: 'habit_check', 
-            due_date: virtualDateKey, content: targetHabit.id,
+            label: `Check ${targetHabit.label}`, 
+            group: 'habit_check', 
+            type: 'habit_check',
+            due_date: virtualDateKey, 
+            content: targetHabit.id,
             x: 0, y: 0
         }]);
         if (!error) responseText = `🔥 Hábito "${targetHabit.label}" feito!`;
-        else responseText = `⚠️ Hábito "${targetHabit.label}" já estava feito.`;
+        else responseText = `⚠️ Erro ou já feito: ${error.message}`;
       
       } else {
         const { data: apps } = await supabase.from('nodes').select('*').eq('group', 'compromisso');
@@ -148,12 +151,15 @@ export async function POST(req: Request) {
 
         if (targetApp) {
             const { error } = await supabase.from('nodes').insert([{ 
-                label: 'App Done', group: 'app_check', content: targetApp.id,
+                label: 'App Done', 
+                group: 'app_check',
+                type: 'app_check', 
+                content: targetApp.id,
                 x: 0, y: 0
             }]);
             
             if(!error) responseText = `✅ Compromisso "${targetApp.label}" concluído!`;
-            else responseText = `⚠️ Compromisso "${targetApp.label}" já estava concluído.`;
+            else responseText = `⚠️ Erro: ${error.message}`;
         } else {
             responseText = `❌ Não encontrei hábito nem compromisso HOJE com esse nome.`;
         }
@@ -167,7 +173,6 @@ export async function POST(req: Request) {
       
       const { data: allApps } = await supabase.from('nodes').select('id, label, due_date').eq('group', 'compromisso');
       const todaysApps = allApps?.filter(app => app.due_date && isSameDayBrazil(app.due_date, virtualDate)) || [];
-
       const { data: aChecks } = await supabase.from('nodes').select('content').eq('group', 'app_check');
 
       const pendingH = hbs?.filter(h => !hChecks?.some(c => c.content === h.id)) || [];
@@ -176,15 +181,14 @@ export async function POST(req: Request) {
       responseText = `📊 *Status (${format(virtualDate, 'dd/MM')}):*\n\n`;
       
       if (pendingH.length === 0 && pendingA.length === 0 && (hbs?.length||0) > 0) {
-          responseText += "🎉 Dia Finalizado! Parabéns.";
+          responseText += "🎉 Dia Finalizado! Tudo feito.";
       } else {
           if (pendingH.length > 0) responseText += `⚠️ *Hábitos:*\n` + pendingH.map(h => `[ ] ${h.label}`).join("\n");
           if (pendingA.length > 0) {
               responseText += `\n📅 *Agenda:*\n` + pendingA.map(a => {
                   const dateUTC = parseISO(a.due_date);
                   const dateBR = subHours(dateUTC, 3);
-                  const timeStr = format(dateBR, 'HH:mm');
-                  return `[ ] ${a.label} (${timeStr})`;
+                  return `[ ] ${a.label} (${format(dateBR, 'HH:mm')})`;
               }).join("\n");
           }
       }
@@ -198,13 +202,18 @@ export async function POST(req: Request) {
         if (existing) {
             await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
         } else {
-            await supabase.from('nodes').insert([{ label: `Log`, content, group: 'daily_log', due_date: virtualDateKey, color: '#fff', x:0, y:0 }]);
+            await supabase.from('nodes').insert([{ 
+                label: `Log`, content, 
+                group: 'daily_log', type: 'daily_log',
+                due_date: virtualDateKey, 
+                color: '#fff', x:0, y:0 
+            }]);
         }
-        responseText = `📝 Salvo no diário de ${format(virtualDate, 'dd/MM')}.`;
+        responseText = `📝 Salvo no diário.`;
     }
 
     // =========================================================================
-    // 5. TÓPICOS (GRÁFICO NEURAL) - CORRIGIDO PARA EVITAR DUPLICIDADE
+    // 5. TÓPICOS (GRÁFICO NEURAL) - ARREMESSANDO ERROS PARA DEBUG
     // =========================================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
@@ -212,96 +221,82 @@ export async function POST(req: Request) {
         if (parts.length >= 2) {
             const [catName, topicName, extraText] = parts; 
             
-            // --- PASSO A: Resolver a Categoria (Pai) ---
+            // --- A: CATEGORIA ---
             let parentId = null;
-
-            // 1. Procura se JÁ EXISTE categoria com esse nome
             const { data: existingCategory } = await supabase
                 .from("nodes")
                 .select("id")
-                .ilike("label", catName) // Case Insensitive ('Dia a dia' == 'dia a dia')
+                .ilike("label", catName)
                 .eq("group", "category")
                 .maybeSingle();
 
             if (existingCategory) {
-                // ACHEI! Uso o ID dela.
                 parentId = existingCategory.id;
             } else {
-                // NÃO ACHEI! Crio uma nova.
-                const { data: newCategory } = await supabase
+                const { data: newCategory, error: errCat } = await supabase
                     .from("nodes")
                     .insert([{ 
-                        label: catName, 
-                        group: "category", 
-                        type: "category",
-                        color: "#ef4444",
-                        x: 0, y: 0
+                        label: catName, group: "category", type: "category",
+                        color: "#ef4444", x: Math.random()*100, y: Math.random()*100
                     }])
                     .select()
                     .single();
                 
+                if (errCat) throw new Error(`Erro Categoria: ${errCat.message}`);
                 if (newCategory) parentId = newCategory.id;
             }
 
-            // --- PASSO B: Resolver o Tópico (Filho) ---
+            // --- B: TÓPICO ---
             if (parentId && topicName) {
-                // 1. Procura se JÁ EXISTE tópico com esse nome
                 const { data: existingTopic } = await supabase
                     .from("nodes")
                     .select("*")
                     .ilike("label", topicName)
-                    .not("group", "eq", "category") // Garante que não pega a categoria por engano
+                    .not("group", "eq", "category")
                     .maybeSingle();
 
                 if (existingTopic) {
-                    // CENÁRIO: JÁ EXISTE -> ATUALIZAR (Não criar bola nova)
-                    // Adiciona o novo texto ao texto antigo
-                    const novoConteudo = existingTopic.content 
-                        ? existingTopic.content + "\n" + (extraText || "") 
-                        : (extraText || "");
+                    // Atualizar
+                    const novoConteudo = existingTopic.content ? existingTopic.content + "\n" + (extraText || "") : (extraText || "");
+                    const { error: errUp } = await supabase.from("nodes").update({ content: novoConteudo }).eq("id", existingTopic.id);
+                    if (errUp) throw new Error(`Erro Update: ${errUp.message}`);
+                    
+                    responseText = `📝 Tópico "${topicName}" atualizado.`;
 
-                    await supabase
-                        .from("nodes")
-                        .update({ content: novoConteudo })
-                        .eq("id", existingTopic.id);
-                        
-                    responseText = `📝 Tópico "${topicName}" atualizado (Informação adicionada à bolinha existente).`;
-
-                    // Garante que a conexão existe (caso o tópico existisse mas estivesse solto)
-                    // Se sua tabela de conexões chamar 'links', troque 'edges' por 'links' abaixo
-                    const { data: linkCheck } = await supabase.from('edges').select('*').eq('source', parentId).eq('target', existingTopic.id);
-                    if (!linkCheck || linkCheck.length === 0) {
-                         await supabase.from('edges').insert({ source: parentId, target: existingTopic.id });
-                    }
+                    // Garantir conexão (Tenta 'edges', se falhar tenta 'links')
+                    const { error: errEdge } = await supabase.from('edges').insert({ source: parentId, target: existingTopic.id });
+                    if (errEdge) await supabase.from('links').insert({ source: parentId, target: existingTopic.id });
 
                 } else {
-                    // CENÁRIO: NÃO EXISTE -> CRIAR NOVA BOLA
-                    const { data: newTopic } = await supabase
+                    // Criar Novo
+                    const { data: newTopic, error: errNew } = await supabase
                         .from("nodes")
                         .insert([{ 
-                            label: topicName, 
-                            group: "topic", 
-                            content: extraText || "", 
-                            image_url: mediaUrl, 
-                            color: "#6b7280",
-                            x: Math.random() * 100,
-                            y: Math.random() * 100
+                            label: topicName, group: "topic", type: "topic",
+                            content: extraText || "", image_url: mediaUrl, 
+                            color: "#6b7280", 
+                            x: Math.random() * 100, y: Math.random() * 100
                         }])
                         .select()
                         .single();
                     
+                    if (errNew) throw new Error(`Erro Tópico: ${errNew.message}`);
+                    
                     if (newTopic) {
-                        // Cria a conexão
-                        // Se sua tabela chamar 'links', mude aqui para 'links'
-                        await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
-                        responseText = `🔗 Novo tópico criado: ${catName} > ${topicName}`;
+                        // Tenta conectar (Edges vs Links)
+                        const { error: errConn } = await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
+                        if (errConn) {
+                            const { error: errConn2 } = await supabase.from("links").insert([{ source: parentId, target: newTopic.id }]);
+                            if (errConn2) throw new Error(`Erro Conexão (Tabela edges/links): ${errConn.message}`);
+                        }
+                        responseText = `🔗 Novo tópico: ${catName} > ${topicName}`;
                     }
                 }
             }
         }
     }
 
-    // --- ENVIAR RESPOSTA PARA WHATSAPP ---
+    // --- ENVIAR RESPOSTA ---
     if (responseText && sender !== "teste_local" && BOT_NUMBER) {
         await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
     }
@@ -309,7 +304,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: "OK", reply: responseText });
 
   } catch (error: any) {
-    console.error("Erro API:", error);
+    console.error("Erro Crítico:", error);
+    
+    // 🔥 O SEGREDO: Manda o erro pro WhatsApp se der zebra
+    if (sender && sender !== "teste_local" && BOT_NUMBER) {
+         try {
+            await twilioClient.messages.create({ 
+                from: BOT_NUMBER, 
+                to: sender, 
+                body: `☠️ Erro no Cérebro: ${error.message}` 
+            });
+         } catch (e) { console.error("Falha ao enviar erro", e); }
+    }
+
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
