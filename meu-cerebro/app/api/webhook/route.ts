@@ -18,7 +18,6 @@ const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 
 // --- FUNÇÕES AUXILIARES ---
 
-// Função para gerar ID único (O Crachá que faltava!)
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
 }
@@ -113,7 +112,7 @@ export async function POST(req: Request) {
         const dateStr = format(targetDate, "yyyy-MM-dd");
         
         await supabase.from('nodes').insert([{
-          id: generateId(), // <--- AQUI ESTÁ A CORREÇÃO
+          id: generateId(), 
           label: title, 
           due_date: `${dateStr}T${targetTime}:00`,
           group: 'compromisso',
@@ -137,7 +136,7 @@ export async function POST(req: Request) {
 
       if (targetHabit) {
         const { error } = await supabase.from('nodes').insert([{
-            id: generateId(), // <--- CORREÇÃO
+            id: generateId(),
             label: `Check ${targetHabit.label}`, 
             group: 'habit_check', 
             type: 'habit_check',
@@ -155,7 +154,7 @@ export async function POST(req: Request) {
 
         if (targetApp) {
             const { error } = await supabase.from('nodes').insert([{ 
-                id: generateId(), // <--- CORREÇÃO
+                id: generateId(),
                 label: 'App Done', 
                 group: 'app_check',
                 type: 'app_check', 
@@ -202,13 +201,13 @@ export async function POST(req: Request) {
     // 4. DIÁRIO
     else if (["diário", "diario", "reflexão"].includes(firstWord)) {
         const content = message.substring(message.indexOf(" ") + 1);
-        const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', virtualDateKey).maybeSingle();
+        const { data: existing } = await supabase.from('nodes').select('id, content').eq('group', 'daily_log').eq('due_date', virtualDateKey).limit(1).maybeSingle();
         
         if (existing) {
             await supabase.from('nodes').update({ content: existing.content + "\n\n" + content }).eq('id', existing.id);
         } else {
             await supabase.from('nodes').insert([{ 
-                id: generateId(), // <--- CORREÇÃO
+                id: generateId(),
                 label: `Log`, content, 
                 group: 'daily_log', type: 'daily_log',
                 due_date: virtualDateKey, 
@@ -219,7 +218,7 @@ export async function POST(req: Request) {
     }
 
     // =========================================================================
-    // 5. TÓPICOS (GRÁFICO NEURAL)
+    // 5. TÓPICOS (GRÁFICO NEURAL) - CORRIGIDO (LIMIT 1)
     // =========================================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
@@ -229,12 +228,16 @@ export async function POST(req: Request) {
             
             // --- A: CATEGORIA ---
             let parentId = null;
-            const { data: existingCategory } = await supabase
+            
+            // MUDANÇA: limit(1) para pegar o primeiro que achar e não dar erro se tiver duplicado
+            const { data: existingCategories } = await supabase
                 .from("nodes")
                 .select("id")
                 .ilike("label", catName)
                 .eq("group", "category")
-                .maybeSingle();
+                .limit(1);
+
+            const existingCategory = existingCategories?.[0];
 
             if (existingCategory) {
                 parentId = existingCategory.id;
@@ -242,7 +245,7 @@ export async function POST(req: Request) {
                 const { data: newCategory, error: errCat } = await supabase
                     .from("nodes")
                     .insert([{ 
-                        id: generateId(), // <--- CORREÇÃO
+                        id: generateId(),
                         label: catName, group: "category", type: "category",
                         color: "#ef4444", x: Math.random()*100, y: Math.random()*100
                     }])
@@ -255,12 +258,15 @@ export async function POST(req: Request) {
 
             // --- B: TÓPICO ---
             if (parentId && topicName) {
-                const { data: existingTopic } = await supabase
+                // MUDANÇA: limit(1) aqui também
+                const { data: existingTopics } = await supabase
                     .from("nodes")
                     .select("*")
                     .ilike("label", topicName)
                     .not("group", "eq", "category")
-                    .maybeSingle();
+                    .limit(1);
+
+                const existingTopic = existingTopics?.[0];
 
                 if (existingTopic) {
                     // Atualizar
@@ -279,7 +285,7 @@ export async function POST(req: Request) {
                     const { data: newTopic, error: errNew } = await supabase
                         .from("nodes")
                         .insert([{ 
-                            id: generateId(), // <--- CORREÇÃO
+                            id: generateId(), 
                             label: topicName, group: "topic", type: "topic",
                             content: extraText || "", image_url: mediaUrl, 
                             color: "#6b7280", 
@@ -291,7 +297,6 @@ export async function POST(req: Request) {
                     if (errNew) throw new Error(`Erro Tópico: ${errNew.message}`);
                     
                     if (newTopic) {
-                        // Tenta conectar
                         const { error: errConn } = await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
                         if (errConn) {
                             const { error: errConn2 } = await supabase.from("links").insert([{ source: parentId, target: newTopic.id }]);
