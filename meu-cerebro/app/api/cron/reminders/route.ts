@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { addDays, format, parseISO, differenceInMinutes, subHours } from "date-fns";
+import { addDays, format, parseISO, differenceInMinutes, subHours, subMinutes, addMinutes, isWithinInterval } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import twilio from "twilio";
 
@@ -56,45 +56,40 @@ export async function GET(req: Request) {
     // 1. ROTINA MATINAL (07:00 BRASIL)
     // ============================================================
     if (currentHour === 7 || forceMode) {
-        const todayKey = format(nowBrazil, 'yyyy-MM-dd');
-        
-        // Busca Compromissos de Hoje
-        const { data: apps } = await supabase.from('nodes')
-            .select('label, due_date')
-            .eq('group', 'compromisso')
-            .ilike('due_date', `${todayKey}%`);
-
-        // Busca Hábitos
-        const { data: habits } = await supabase.from('nodes')
-            .select('label')
-            .eq('group', 'habit');
-
-        let msg = `☀️ *Bom dia! Aqui está seu briefing de hoje (${format(nowBrazil, 'dd/MM')}):*\n\n`;
-        
-        if (habits && habits.length > 0) {
-            msg += `💪 *Foco nos Hábitos:*\n` + habits.map(h => `- ${h.label}`).join("\n");
-        } else {
-            msg += `💪 *Hábitos:* Nenhum configurado.`;
-        }
-
-        msg += `\n\n`;
-
-        if (apps && apps.length > 0) {
-            msg += `📅 *Agenda de Hoje:*\n` + apps.map(a => {
-                // Pega hora do banco (ex: 2026-01-20T14:00:00)
-                const time = a.due_date.split('T')[1].substring(0,5);
-                return `[${time}] ${a.label}`;
-            }).join("\n");
-        } else {
-            msg += `📅 *Agenda:* Dia livre! Aproveite.`;
-        }
-
-        // Envia apenas se for a primeira vez que roda na hora 7 (evita spam se o cron rodar varias vezes)
-        // Como o cron roda a cada 10 min, ele mandaria 6 vezes entre 07:00 e 07:59.
-        // TRUQUE: Só manda se os minutos forem < 12 (ou seja, roda no cron das 07:00 ou 07:10)
+        // Só executa nos primeiros minutos da hora 7 para evitar repetição (ou se forçado)
         if (nowBrazil.getMinutes() < 12 || forceMode) {
-             const log = await sendWhatsAppMessage(msg);
-             logs.push("Rotina Matinal: " + log);
+            const todayKey = format(nowBrazil, 'yyyy-MM-dd');
+            
+            const { data: apps } = await supabase.from('nodes')
+                .select('label, due_date')
+                .eq('group', 'compromisso')
+                .ilike('due_date', `${todayKey}%`);
+
+            const { data: habits } = await supabase.from('nodes')
+                .select('label')
+                .eq('group', 'habit');
+
+            let msg = `☀️ *Bom dia! Aqui está seu briefing de hoje (${format(nowBrazil, 'dd/MM')}):*\n\n`;
+            
+            if (habits && habits.length > 0) {
+                msg += `💪 *Foco nos Hábitos:*\n` + habits.map(h => `- ${h.label}`).join("\n");
+            } else {
+                msg += `💪 *Hábitos:* Nenhum configurado.`;
+            }
+
+            msg += `\n\n`;
+
+            if (apps && apps.length > 0) {
+                msg += `📅 *Agenda de Hoje:*\n` + apps.map(a => {
+                    const time = a.due_date.split('T')[1].substring(0,5);
+                    return `[${time}] ${a.label}`;
+                }).join("\n");
+            } else {
+                msg += `📅 *Agenda:* Dia livre! Aproveite.`;
+            }
+
+            const log = await sendWhatsAppMessage(msg);
+            logs.push("Rotina Matinal: " + log);
         }
     }
 
@@ -102,23 +97,22 @@ export async function GET(req: Request) {
     // 2. ROTINA NOTURNA (22:00 BRASIL)
     // ============================================================
     if (currentHour === 22 || forceMode) {
-        const tomorrow = addDays(nowBrazil, 1);
-        const tomorrowKey = format(tomorrow, 'yyyy-MM-dd');
-        
-        const { data: apps } = await supabase.from('nodes')
-            .select('label, due_date')
-            .eq('group', 'compromisso')
-            .ilike('due_date', `${tomorrowKey}%`);
-
-        if (apps && apps.length > 0) {
-            let msg = `🌙 *Preview de Amanhã (${format(tomorrow, 'dd/MM')}):*\n\n`;
-            msg += `Não esqueça:\n` + apps.map(a => {
-                const time = a.due_date.split('T')[1].substring(0,5);
-                return `• ${time} - ${a.label}`;
-            }).join("\n");
+        if (nowBrazil.getMinutes() < 12 || forceMode) {
+            const tomorrow = addDays(nowBrazil, 1);
+            const tomorrowKey = format(tomorrow, 'yyyy-MM-dd');
             
-            // Mesmo truque anti-spam: só manda nos primeiros minutos da hora 22
-            if (nowBrazil.getMinutes() < 12 || forceMode) {
+            const { data: apps } = await supabase.from('nodes')
+                .select('label, due_date')
+                .eq('group', 'compromisso')
+                .ilike('due_date', `${tomorrowKey}%`);
+
+            if (apps && apps.length > 0) {
+                let msg = `🌙 *Preview de Amanhã (${format(tomorrow, 'dd/MM')}):*\n\n`;
+                msg += `Não esqueça:\n` + apps.map(a => {
+                    const time = a.due_date.split('T')[1].substring(0,5);
+                    return `• ${time} - ${a.label}`;
+                }).join("\n");
+                
                 const log = await sendWhatsAppMessage(msg);
                 logs.push("Rotina Noturna: " + log);
             }
@@ -126,21 +120,33 @@ export async function GET(req: Request) {
     }
 
     // ============================================================
-    // 3. ALERTA DE URGÊNCIA (30 MIN ANTES)
+    // 3. ALERTAS DE TEMPO (30min ANTES + HORA EXATA)
     // ============================================================
-    // Busca compromissos futuros baseados na hora do Brasil
-    const { data: futureApps } = await supabase.from('nodes')
+    
+    // MUDANÇA: Buscamos compromissos de 1h atrás para frente.
+    // Isso garante que peguemos o compromisso que é "AGORA" mesmo se passar alguns segundos.
+    const { data: activeApps } = await supabase.from('nodes')
         .select('*')
         .eq('group', 'compromisso')
-        .gt('due_date', nowBrazil.toISOString().split('.')[0]); // Pega datas maiores que AGORA
+        .gt('due_date', subHours(nowBrazil, 1).toISOString()); 
 
-    if (futureApps) {
-        for (const app of futureApps) {
+    // Janela para "Hora Exata" (centralizada no momento atual para cobrir o intervalo do Cron)
+    const windowExactStart = subMinutes(nowBrazil, 6);
+    const windowExactEnd = addMinutes(nowBrazil, 4);
+
+    if (activeApps) {
+        for (const app of activeApps) {
             const appTime = parseISO(app.due_date);
-            // Compara a hora do compromisso com a hora atual do Brasil
-            const diff = differenceInMinutes(appTime, nowBrazil);
+            
+            // A) HORA EXATA (O Despertador)
+            if (isWithinInterval(appTime, { start: windowExactStart, end: windowExactEnd })) {
+                 const msg = `🔔 *AGORA:* ${app.label}\n⏰ ${format(appTime, "HH:mm")}`;
+                 const log = await sendWhatsAppMessage(msg);
+                 logs.push(`Alerta Hora Exata (${app.label}): ` + log);
+            }
 
-            // Regra: Se falta entre 25 e 35 minutos
+            // B) 30 MINUTOS ANTES (A Urgência)
+            const diff = differenceInMinutes(appTime, nowBrazil);
             if (diff >= 25 && diff <= 35) {
                 const msg = `🚨 *CORRE!* "${app.label}" começa em 30 minutos!`;
                 const log = await sendWhatsAppMessage(msg);
