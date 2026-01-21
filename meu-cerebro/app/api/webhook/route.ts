@@ -19,6 +19,7 @@ const BOT_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 // --- FUNÇÕES AUXILIARES ---
 
 function generateId() {
+    // Gera um ID aleatório simples para não depender do banco
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
 }
 
@@ -83,7 +84,6 @@ export async function POST(req: Request) {
   try {
     const contentType = req.headers.get('content-type') || '';
     let message = "";
-    let mediaUrl = null;
 
     if (contentType.includes('application/json')) {
         const body = await req.json();
@@ -93,7 +93,6 @@ export async function POST(req: Request) {
         const formData = await req.formData();
         message = formData.get('Body') as string;
         sender = formData.get('From') as string;
-        mediaUrl = formData.get("MediaUrl0")?.toString() || null;
     }
 
     if (!message) return NextResponse.json({ error: "Vazio" }, { status: 400 });
@@ -105,8 +104,13 @@ export async function POST(req: Request) {
     const virtualDate = getVirtualDate();
     const virtualDateKey = format(virtualDate, "yyyy-MM-dd");
 
+    // 0. COMANDO DE TESTE (PING)
+    if (firstWord === "ping") {
+        responseText = "🏓 Pong! O cérebro está online.";
+    }
+
     // 1. AGENDAR
-    if (firstWord === "agendar") {
+    else if (firstWord === "agendar") {
       const { targetDate, targetTime, title } = extractBookingDetails(message);
       if (targetDate && targetTime && title) {
         const dateStr = format(targetDate, "yyyy-MM-dd");
@@ -218,7 +222,7 @@ export async function POST(req: Request) {
     }
 
     // =========================================================================
-    // 5. TÓPICOS (GRÁFICO NEURAL) - CORRIGIDO (LIMIT 1)
+    // 5. TÓPICOS (GRÁFICO NEURAL) - VERSÃO ANTI-TRAVAMENTO
     // =========================================================================
     else if (message.includes(">")) {
         const parts = message.split(">").map((p) => p.trim());
@@ -229,19 +233,21 @@ export async function POST(req: Request) {
             // --- A: CATEGORIA ---
             let parentId = null;
             
-            // MUDANÇA: limit(1) para pegar o primeiro que achar e não dar erro se tiver duplicado
-            const { data: existingCategories } = await supabase
+            // BUSCA SEGURA: Pega uma lista (limit 1) em vez de exigir único
+            const { data: categories, error: errSearchCat } = await supabase
                 .from("nodes")
                 .select("id")
                 .ilike("label", catName)
                 .eq("group", "category")
                 .limit(1);
 
-            const existingCategory = existingCategories?.[0];
+            if (errSearchCat) throw new Error(`Erro busca Categoria: ${errSearchCat.message}`);
 
-            if (existingCategory) {
-                parentId = existingCategory.id;
+            // Se achou pelo menos um, usa o primeiro.
+            if (categories && categories.length > 0) {
+                parentId = categories[0].id;
             } else {
+                // Se não achou, cria.
                 const { data: newCategory, error: errCat } = await supabase
                     .from("nodes")
                     .insert([{ 
@@ -252,21 +258,23 @@ export async function POST(req: Request) {
                     .select()
                     .single();
                 
-                if (errCat) throw new Error(`Erro Categoria: ${errCat.message}`);
+                if (errCat) throw new Error(`Erro Criar Categoria: ${errCat.message}`);
                 if (newCategory) parentId = newCategory.id;
             }
 
             // --- B: TÓPICO ---
             if (parentId && topicName) {
-                // MUDANÇA: limit(1) aqui também
-                const { data: existingTopics } = await supabase
+                // BUSCA SEGURA PARA O TÓPICO TAMBÉM
+                const { data: topics, error: errSearchTop } = await supabase
                     .from("nodes")
                     .select("*")
                     .ilike("label", topicName)
                     .not("group", "eq", "category")
                     .limit(1);
 
-                const existingTopic = existingTopics?.[0];
+                if (errSearchTop) throw new Error(`Erro busca Tópico: ${errSearchTop.message}`);
+
+                const existingTopic = (topics && topics.length > 0) ? topics[0] : null;
 
                 if (existingTopic) {
                     // Atualizar
@@ -276,10 +284,9 @@ export async function POST(req: Request) {
                     
                     responseText = `📝 Tópico "${topicName}" atualizado.`;
 
-                    // Garantir conexão
+                    // Conexão Segura
                     const { error: errEdge } = await supabase.from('edges').insert({ source: parentId, target: existingTopic.id });
-                    if (errEdge) await supabase.from('links').insert({ source: parentId, target: existingTopic.id });
-
+                    // Ignora erro se já existir conexão
                 } else {
                     // Criar Novo
                     const { data: newTopic, error: errNew } = await supabase
@@ -287,21 +294,19 @@ export async function POST(req: Request) {
                         .insert([{ 
                             id: generateId(), 
                             label: topicName, group: "topic", type: "topic",
-                            content: extraText || "", image_url: mediaUrl, 
+                            content: extraText || "", 
                             color: "#6b7280", 
                             x: Math.random() * 100, y: Math.random() * 100
                         }])
                         .select()
                         .single();
                     
-                    if (errNew) throw new Error(`Erro Tópico: ${errNew.message}`);
+                    if (errNew) throw new Error(`Erro Criar Tópico: ${errNew.message}`);
                     
                     if (newTopic) {
                         const { error: errConn } = await supabase.from("edges").insert([{ source: parentId, target: newTopic.id }]);
-                        if (errConn) {
-                            const { error: errConn2 } = await supabase.from("links").insert([{ source: parentId, target: newTopic.id }]);
-                            if (errConn2) throw new Error(`Erro Conexão: ${errConn.message}`);
-                        }
+                        if (errConn) await supabase.from("links").insert([{ source: parentId, target: newTopic.id }]);
+                        
                         responseText = `🔗 Novo tópico: ${catName} > ${topicName}`;
                     }
                 }
@@ -311,7 +316,11 @@ export async function POST(req: Request) {
 
     // --- ENVIAR RESPOSTA ---
     if (responseText && sender !== "teste_local" && BOT_NUMBER) {
-        await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
+        try {
+            await twilioClient.messages.create({ from: BOT_NUMBER, to: sender, body: responseText });
+        } catch (twilioError) {
+            console.error("Erro Twilio:", twilioError);
+        }
     }
 
     return NextResponse.json({ status: "OK", reply: responseText });
